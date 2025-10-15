@@ -9,16 +9,16 @@ FROM python:3.11-slim AS base
 WORKDIR /app
 
 # Copia arquivos de dependências primeiro (para melhor cache)
-COPY ../requirements.txt /app/requirements.txt
+COPY requirements.txt /app/requirements.txt
 
 # Instala dependências do sistema e Python
 RUN apt-get update && apt-get install -y build-essential wget curl \
     && pip install --no-cache-dir -r /app/requirements.txt
 
 # Copia o restante do código da aplicação
-COPY ./app /app/app
-COPY .env /app/.env
-COPY ./scripts /app/scripts
+COPY backend/app /app/app
+COPY backend/.env /app/.env
+COPY backend/scripts /app/scripts
 
 # Cria diretório persistente para Chroma
 RUN mkdir -p /app/chroma_db

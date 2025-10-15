@@ -8,13 +8,13 @@ FROM python:3.11-slim AS base
 WORKDIR /app
 
 # Copia dependências do backend para aproveitar a mesma stack
-COPY ../requirements.txt /app/requirements.txt
+COPY requirements.txt /app/requirements.txt
 
 # Instala Streamlit e dependências mínimas
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copia o código do frontend
-COPY ./main.py /app/main.py
+COPY frontend/main.py /app/main.py
 
 # Define porta do Streamlit
 EXPOSE 8501
