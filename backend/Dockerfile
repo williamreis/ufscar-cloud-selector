@@ -9,7 +9,7 @@ FROM python:3.11-slim AS base
 WORKDIR /app
 
 # Copia arquivos de dependências primeiro (para melhor cache)
-COPY ./requirements.txt /app/requirements.txt
+COPY ../requirements.txt /app/requirements.txt
 
 # Instala dependências do sistema e Python
 RUN apt-get update && apt-get install -y build-essential wget curl \
