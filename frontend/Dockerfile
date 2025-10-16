@@ -10,8 +10,10 @@ WORKDIR /app
 # Copia dependências do backend para aproveitar a mesma stack
 COPY requirements.txt /app/requirements.txt
 
-# Instala Streamlit e dependências mínimas
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Instala dependências do sistema, Streamlit e dependências mínimas
+# Adicionado 'build-essential' e 'cargo' para compilar dependências (como chromadb)
+RUN apt-get update && apt-get install -y build-essential curl cargo \
+    && pip install --no-cache-dir -r /app/requirements.txt
 
 # Copia o código do frontend
 COPY frontend/main.py /app/main.py

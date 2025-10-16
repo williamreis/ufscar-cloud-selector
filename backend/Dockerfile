@@ -12,7 +12,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
 # Instala dependências do sistema e Python
-RUN apt-get update && apt-get install -y build-essential wget curl \
+RUN apt-get update && apt-get install -y build-essential wget curl cargo \
     && pip install --no-cache-dir -r /app/requirements.txt
 
 # Copia o restante do código da aplicação
