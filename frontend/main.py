@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 from pydantic import BaseModel
 
-API_URL = "http://backend:8000/api/recommend"  # no docker-compose, backend service name
+API_URL = "http://backend:8502/api/recommend"  # no docker-compose, backend service name
 
 st.set_page_config(page_title="Cloud Provider Selector", layout="wide")
 
