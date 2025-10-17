@@ -9,8 +9,10 @@ services:
     ports:
       - "8502:8000"
     volumes:
+      - ./backend/app:/app
       - ./backend/chroma_db:/app/chroma_db
       - ./backend/data:/app/data
+      - ./backend/scripts:/app/scripts
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
@@ -25,3 +27,5 @@ services:
     environment:
       - STREAMLIT_SERVER_ENABLE_CORS=false
       - STREAMLIT_SERVER_HEADLESS=true
+    volumes:
+      - ./frontend:/app
