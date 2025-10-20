@@ -1,22 +1,15 @@
-fastapi==0.95.2
-uvicorn[standard]==0.22.0
-pydantic==1.10.12
-requests==2.31.0
-python-dotenv==1.0.0
-
-# LangChain / Vectorstore / embeddings
+fastapi
+uvicorn
+pydantic
+python-dotenv
 langchain==0.1.17
-langchain-community
-langchain-openai
-langchain-groq
-chromadb==0.4.8
-
-# OpenAI
-openai==1.0.0
-
-# Utilities
-numpy==1.26.0
-pandas==2.2.2
-
-# For streamlit front (if mounted in backend env)
-streamlit==1.25.0
+langchain-community==0.0.36
+langchain-core==0.1.52
+langchain-openai==0.1.4
+chromadb
+openai==1.16.1
+numpy
+pandas
+streamlit
+requests
+langchain-groq==0.1.3
