@@ -65,9 +65,9 @@ def ingest_webpages(urls):
 if __name__ == "__main__":
     # Exemplo de ingestão combinada
     pdfs = [
-        "./data/aws-sustainability-report.pdf",
-        "./data/azure-sustainability-summary.pdf",
-        "./data/google-cloud-sustainability.pdf"
+        "./data/2023-amazon-sustainability-report-aws-summary.pdf",
+        "./data/2025-azure-environmental-sustainability-report.pdf",
+        "./data/2023-google-environmental-report.pdf"
     ]
 
     urls = [
