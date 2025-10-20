@@ -2,7 +2,6 @@ import os
 import json
 import re
 from dotenv import load_dotenv
-from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -80,14 +79,16 @@ Retorne APENAS um JSON válido no formato:
 # ===============================
 async def llm_extract_weights_and_notes(numeric_scores: dict, free_texts: dict):
     llm = get_llm()
-    chain = LLMChain(llm=llm, prompt=WEIGHTS_PROMPT)
-    resp = await chain.arun({"numeric_scores": numeric_scores, "free_texts": free_texts})
+    chain = WEIGHTS_PROMPT | llm
+    resp_message = await chain.ainvoke({{"numeric_scores": numeric_scores, "free_texts": free_texts}})
+    resp_content = resp_message.content
 
     try:
-        j = json.loads(resp)
+        j = json.loads(resp_content)
     except Exception:
-        m = re.search(r'\{.*\}', resp, re.S)
-        j = json.loads(m.group(0)) if m else {{"criteria_weights": {}, "notes": resp}}
+        # Tenta extrair o JSON do texto se a análise direta falhar
+        m = re.search(r'\{.*\}', resp_content, re.S)
+        j = json.loads(m.group(0)) if m else {{"criteria_weights": {}, "notes": resp_content}}
     return j
 
 
