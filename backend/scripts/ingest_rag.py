@@ -78,5 +78,5 @@ if __name__ == "__main__":
 
     print("🔄 Iniciando ingestão de PDFs e páginas web...")
     db_pdf = ingest_pdfs(pdfs)
-    db_web = ingest_webpages(urls)
+    # db_web = ingest_webpages(urls)
     print("🏁 Processo concluído.")
