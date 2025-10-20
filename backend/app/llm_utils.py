@@ -2,11 +2,12 @@ import os
 import json
 import re
 from dotenv import load_dotenv
-from langchain import LLMChain
+from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.document_loaders import PyPDFLoader
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_openai import ChatOpenAI
 
 # Carrega variáveis de ambiente
 load_dotenv()
@@ -40,7 +41,6 @@ def get_llm():
             max_tokens=1500
         )
     else:
-        from langchain.chat_models import ChatOpenAI
         print(f"🔹 Usando OpenAI API com modelo: {OPENAI_MODEL}")
         llm = ChatOpenAI(
             openai_api_key=OPENAI_API_KEY,
@@ -81,13 +81,13 @@ Retorne APENAS um JSON válido no formato:
 async def llm_extract_weights_and_notes(numeric_scores: dict, free_texts: dict):
     llm = get_llm()
     chain = LLMChain(llm=llm, prompt=WEIGHTS_PROMPT)
-    resp = chain.run({"numeric_scores": numeric_scores, "free_texts": free_texts})
+    resp = await chain.arun({"numeric_scores": numeric_scores, "free_texts": free_texts})
 
     try:
         j = json.loads(resp)
     except Exception:
         m = re.search(r'\{.*\}', resp, re.S)
-        j = json.loads(m.group(0)) if m else {"criteria_weights": {}, "notes": resp}
+        j = json.loads(m.group(0)) if m else {{"criteria_weights": {}, "notes": resp}}
     return j
 
 
