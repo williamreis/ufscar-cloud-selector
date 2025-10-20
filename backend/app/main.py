@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict, Optional
-from app.schemas import QuestionnaireResponse, RecommendationResponse
-from app.llm_utils import llm_extract_weights_and_notes, rag_query_documents
-from app.ahp import compute_ahp_ranking
-from app.providers_data import PROVIDERS
+from schemas import QuestionnaireResponse, RecommendationResponse
+from llm_utils import llm_extract_weights_and_notes, rag_query_documents
+from ahp import compute_ahp_ranking
+from providers_data import PROVIDERS
 
 app = FastAPI(title="Cloud Provider Selector API")
 

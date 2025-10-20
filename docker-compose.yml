@@ -4,16 +4,23 @@ services:
       context: .
       dockerfile: ./backend/Dockerfile
     container_name: cloud_backend
+    working_dir: /app/app
     env_file:
       - ./backend/.env
     ports:
-      - "8502:8000"
+      - "8001:8000"
     volumes:
-      - ./backend/app:/app
+      - ./backend/app:/app/app
       - ./backend/chroma_db:/app/chroma_db
       - ./backend/data:/app/data
       - ./backend/scripts:/app/scripts
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   frontend:
     build:
@@ -21,7 +28,8 @@ services:
       dockerfile: ./frontend/Dockerfile
     container_name: cloud_frontend
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "8501:8501"
     environment:
@@ -29,3 +37,4 @@ services:
       - STREAMLIT_SERVER_HEADLESS=true
     volumes:
       - ./frontend:/app
+    command: streamlit run /app/main.py
