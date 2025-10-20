@@ -3,7 +3,7 @@ import json
 import re
 from dotenv import load_dotenv
 from langchain.prompts import PromptTemplate
-from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.embeddings import OpenAIEmbeddings, HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_openai import ChatOpenAI
@@ -80,7 +80,7 @@ Retorne APENAS um JSON válido no formato:
 async def llm_extract_weights_and_notes(numeric_scores: dict, free_texts: dict):
     llm = get_llm()
     chain = WEIGHTS_PROMPT | llm
-    resp_message = await chain.ainvoke({{"numeric_scores": numeric_scores, "free_texts": free_texts}})
+    resp_message = await chain.ainvoke({"numeric_scores": numeric_scores, "free_texts": free_texts})
     resp_content = resp_message.content
 
     try:
@@ -99,7 +99,11 @@ def rag_query_documents(query: str, top_k: int = 3):
     """
     Busca por similaridade no Chroma (vector store persistente)
     """
-    embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+    if LLM_PROVIDER == "openai":
+        embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+    else:
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
     chroma = Chroma(
         persist_directory=VECTOR_DB_PATH,
         collection_name=VECTOR_COLLECTION_NAME,
