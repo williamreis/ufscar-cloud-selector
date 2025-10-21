@@ -19,7 +19,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
-VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./chroma_db")
+VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./data/chroma_db")
 VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "providers_docs")
 
 

@@ -11,7 +11,7 @@ services:
       - "8001:8000"
     volumes:
       - ./backend/app:/app/app
-      - ./backend/chroma_db:/app/chroma_db
+      - ./backend/data/chroma_db:/app/data/chroma_db
       - ./backend/data:/app/data
       - ./backend/scripts:/app/scripts
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload

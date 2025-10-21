@@ -21,8 +21,8 @@ COPY backend/.env /backend/.env
 COPY backend/scripts /backend/scripts
 
 # Cria diretório persistente para Chroma
-RUN mkdir -p /backend/chroma_db
-VOLUME ["/backend/chroma_db"]
+RUN mkdir -p /backend/data/chroma_db
+VOLUME ["/backend/data/chroma_db"]
 
 # Expor a porta padrão do FastAPI
 EXPOSE 8000

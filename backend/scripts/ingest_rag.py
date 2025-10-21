@@ -8,7 +8,7 @@ from langchain.document_loaders import PyPDFLoader, WebBaseLoader
 # Carregar variáveis de ambiente
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./chroma_db")
+VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./data/chroma_db")
 VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "providers_docs")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 200))
@@ -65,9 +65,9 @@ def ingest_webpages(urls):
 if __name__ == "__main__":
     # Exemplo de ingestão combinada
     pdfs = [
-        "./data/2023-amazon-sustainability-report-aws-summary.pdf",
-        "./data/2025-azure-environmental-sustainability-report.pdf",
-        "./data/2023-google-environmental-report.pdf"
+        "./data/pdf/2023-amazon-sustainability-report-aws-summary.pdf",
+        "./data/pdf/2025-azure-environmental-sustainability-report.pdf",
+        "./data/pdf/2023-google-environmental-report.pdf"
     ]
 
     urls = [
