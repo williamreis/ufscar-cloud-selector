@@ -11,24 +11,37 @@ st.markdown("Responda o questionário. O sistema usará IA + AHP para recomendar
 
 with st.form("questionnaire"):
     respondent = st.text_input("Nome do gestor / e-mail (opcional)")
+
     st.header("Sustentabilidade")
-    s1 = st.selectbox("O provedor adota práticas de eficiência energética?",
-                      ["Sim, de forma comprovada", "Sim, parcialmente", "Não sei informar", "Não adota"])
-    s2 = st.selectbox("A empresa demonstra preocupação ambiental?", ["Alta", "Média", "Baixa", "Não sei"])
-    s_text = st.text_area("Quais iniciativas de sustentabilidade considera relevantes? (resposta curta)")
+    s1 = st.selectbox(
+        "1. O quanto a eficiência energética dos data centers é relevante para sua instituição na escolha de provedores de Cloud?",
+        ["Extremamente relevante", "Muito relevante", "Moderadamente relevante", "Pouco relevante", "Irrelevante"]
+    )
+    s2 = st.selectbox(
+        "2. O quanto práticas como uso de energia renovável e redução de emissões influenciam sua decisão?",
+        ["Influenciam fortemente", "Influenciam moderadamente", "Pouco influenciam", "Não influenciam"]
+    )
+    s_text = st.text_area("3. Em sua opinião, como a sustentabilidade deve ser considerada na contratação de serviços em nuvem?")
+
     st.header("Desempenho")
-    p1 = st.selectbox("Como você avalia a disponibilidade (uptime) oferecida pelo provedor?",
-                      ["Superior a 99,9%", "Entre 99% e 99,9%", "Inferior a 99%", "Não informado"])
-    p2 = st.selectbox("O provedor garante escalabilidade conforme demanda?",
-                      ["Totalmente", "Parcialmente", "Limitada", "Não sei informar"])
-    p_text = st.text_area("Quais fatores mais influenciam sua percepção de desempenho?")
+    p1 = st.selectbox("4. O quanto a disponibilidade (uptime) dos serviços impacta a confiança no provedor?",
+                      ["Impacta totalmente", "Impacta muito", "Impacta moderadamente", "Impacta pouco", "Não impacta"])
+
+    p2 = st.selectbox("5. O suporte técnico e o tempo de resposta a incidentes são determinantes na sua avaliação?",
+                      ["Sim, determinantes", "Sim, relevantes", "Moderadamente relevantes", "Pouco relevantes", "Irrelevantes"])
+
+    p_text = st.text_area("6. Cite um exemplo de problema de desempenho que impactaria a continuidade dos serviços da instituição.?")
+
     st.header("Segurança")
-    sec1 = st.selectbox("O provedor possui certificações de segurança (ex: ISO 27001)?",
-                        ["Sim, várias", "Sim, pelo menos uma", "Não possui", "Não sei informar"])
-    sec2 = st.selectbox("O provedor oferece backup e recuperação de desastres?",
-                        ["Sim, com redundância geográfica", "Sim, local", "Parcialmente", "Não oferece"])
-    sec_text = st.text_area("Principais riscos de segurança que você enxerga?")
-    submitted = st.form_submit_button("Enviar e obter recomendação")
+    sec1 = st.selectbox("7. O quanto certificações de segurança (ex.: ISO 27001, SOC 2, GDPR) influenciam sua confiança no provedor?",
+                        ["Influenciam totalmente", "Influenciam muito", "Influenciam moderadamente", "Pouco influenciam", "Não influenciam"])
+
+    sec2 = st.selectbox("8. Quão importante é o backup e a recuperação de desastres como requisito mínimo de segurança?",
+                        ["Extremamente importante", "Muito importante", "Moderadamente importante", "Pouco importante", "Irrelevante"])
+    
+    sec_text = st.text_area("9. Em sua percepção, quais medidas de segurança são indispensáveis em provedores de Cloud?")
+
+    submitted = st.form_submit_button("Enviar Questionário")
 
 if submitted:
     # montar payload
