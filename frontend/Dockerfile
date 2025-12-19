@@ -8,11 +8,11 @@ FROM python:3.11-slim AS base
 WORKDIR /frontend
 
 # Copia dependências do backend para aproveitar a mesma stack
-COPY requirements.txt /frontend/requirements.txt
+COPY frontend/requirements.txt /frontend/requirements.txt
 
 # Instala dependências do sistema, Streamlit e dependências mínimas
-# Adicionado 'build-essential' e 'cargo' para compilar dependências (como chromadb)
-RUN apt-get update && apt-get install -y build-essential curl cargo \
+# Adicionado 'build-essential'
+RUN apt-get update && apt-get install -y build-essential curl \
     && pip install --no-cache-dir -r /frontend/requirements.txt
 
 # Copia o código do frontend

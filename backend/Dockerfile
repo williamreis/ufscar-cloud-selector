@@ -9,7 +9,7 @@ FROM python:3.11-slim AS base
 WORKDIR /backend
 
 # Copia arquivos de dependências primeiro (para melhor cache)
-COPY requirements.txt /backend/requirements.txt
+COPY backend/requirements.txt /backend/requirements.txt
 
 # Instala dependências do sistema e Python
 RUN apt-get update && apt-get install -y build-essential wget curl cargo \
