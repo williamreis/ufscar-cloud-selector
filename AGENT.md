@@ -25,7 +25,30 @@ O LLM extrai um conjunto de pesos para os diferentes critérios de seleção (po
 ### 3. Processo de Hierarquia Analítica (AHP)
 
 O Analytic Hierarchy Process (AHP) é um método de tomada de decisão multicritério.
-O agente utiliza os pesos extraídos pelo LLM como entrada para o modelo AHP, que então calcula uma pontuação para cada provedor de nuvem com base em um conjunto pré-definido de dados dos provedores.
+O cálculo é determinístico e auditável, em quatro etapas:
+
+1. **Intensidade por critério (escala 1–5)** — média das perguntas de relevância
+   (seções A, B e C), deslocada pelas perguntas comparativas (seções D e E) e
+   refinada por um ajuste do LLM (limitado a ±1) derivado das respostas dissertativas.
+2. **Matriz de comparação par a par** — a diferença de intensidade entre dois
+   critérios é convertida em uma razão na escala de Saaty (1, 3, 5, 7, 9), com
+   os recíprocos preenchendo o par inverso.
+3. **Prioridades dos critérios** — autovetor principal da matriz (método das
+   potências), acompanhado de λmax, do índice de consistência (IC) e da
+   **razão de consistência (RC = IC / IR)**, comparada ao limite de 0,10 de Saaty.
+4. **Síntese das alternativas** — modo distributivo: as notas de referência de
+   cada provedor são normalizadas dentro de cada critério e agregadas pelos pesos.
+   As prioridades finais somam 1 entre os provedores.
+
+**Ressalva metodológica:** no AHP clássico o gestor informa cada comparação
+diretamente ("quanto A é mais importante que B, de 1 a 9"). Aqui a matriz é
+*derivada* das respostas do questionário, que não pede as comparações uma a uma.
+A derivação é determinística e a matriz completa é devolvida pela API (campo
+`ahp`) para auditoria, mas não substitui a elicitação par a par direta.
+
+O papel do LLM é restrito: ele **não** define os pesos finais, apenas propõe um
+ajuste nas intensidades a partir do texto livre e redige a justificativa. Assim o
+resultado permanece reprodutível a partir das respostas fechadas.
 
 ### 4. Geração com Recuperação de Contexto (RAG)
 

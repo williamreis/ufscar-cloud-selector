@@ -11,7 +11,8 @@ services:
       - "8001:8000"
     volumes:
       - ./backend/app:/app/app
-      - ./backend/data/chroma_db:/app/data/chroma_db
+      # ./backend/data já cobre data/faiss_index, data/pdf e data/upload —
+      # não é necessário um bind mount extra por subpasta.
       - ./backend/data:/app/data
       - ./backend/scripts:/app/scripts
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -31,10 +32,13 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "8501:8501"
-    environment:
-      - STREAMLIT_SERVER_ENABLE_CORS=false
-      - STREAMLIT_SERVER_HEADLESS=true
+      - "8501:80"
     volumes:
-      - ./frontend:/app
-    command: streamlit run /app/main.py
+      # Editável sem rebuild: sobrescreve o questions.json que foi embutido no build.
+      - ./frontend/public/questions.json:/usr/share/nginx/html/questions.json
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

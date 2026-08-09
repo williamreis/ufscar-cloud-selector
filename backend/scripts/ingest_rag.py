@@ -1,21 +1,21 @@
 import os
 from dotenv import load_dotenv
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
-from langchain.document_loaders import PyPDFLoader, WebBaseLoader
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 
 # Carregar variáveis de ambiente
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./data/chroma_db")
+VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./data/faiss_index")
 VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "providers_docs")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 200))
 
 
 def ingest_pdfs(pdf_paths):
-    """Carrega e divide PDFs em chunks e indexa no Chroma."""
+    """Carrega e divide PDFs em chunks e indexa no FAISS."""
     embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
     splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
 
@@ -27,13 +27,8 @@ def ingest_pdfs(pdf_paths):
         print(f"[PDF] {path}: {len(chunks)} chunks gerados.")
         docs_total.extend(chunks)
 
-    db = Chroma.from_documents(
-        documents=docs_total,
-        embedding=embeddings,
-        persist_directory=VECTOR_DB_PATH,
-        collection_name=VECTOR_COLLECTION_NAME
-    )
-    db.persist()
+    db = FAISS.from_documents(documents=docs_total, embedding=embeddings)
+    db.save_local(VECTOR_DB_PATH)
     print(f"✅ Indexação concluída com {len(docs_total)} chunks.")
     return db
 
@@ -51,13 +46,8 @@ def ingest_webpages(urls):
         print(f"[WEB] {url}: {len(chunks)} chunks gerados.")
         docs_total.extend(chunks)
 
-    db = Chroma.from_documents(
-        documents=docs_total,
-        embedding=embeddings,
-        persist_directory=VECTOR_DB_PATH,
-        collection_name=VECTOR_COLLECTION_NAME
-    )
-    db.persist()
+    db = FAISS.from_documents(documents=docs_total, embedding=embeddings)
+    db.save_local(VECTOR_DB_PATH)
     print(f"✅ Indexação concluída com {len(docs_total)} chunks.")
     return db
 

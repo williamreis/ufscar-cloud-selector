@@ -2,4 +2,11 @@
 .git
 .env
 *.sql
-*.sqlite3
+
+# Índice vetorial FAISS (dados derivados, gerados via /api/documents/ingest*)
+backend/data/faiss_index/*
+!backend/data/faiss_index/.gitkeep
+
+# Frontend (React)
+frontend/node_modules
+frontend/dist
