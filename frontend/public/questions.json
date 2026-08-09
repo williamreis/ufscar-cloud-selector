@@ -1,0 +1,153 @@
+{
+  "option_sets": {
+    "relevance": [
+      "Decisivo (critério indispensável)",
+      "Muito relevante",
+      "Relevante",
+      "Pouco relevante",
+      "Irrelevante"
+    ]
+  },
+  "sections": [
+    {
+      "id": "sustainability",
+      "badge": "A",
+      "title": "Sustentabilidade",
+      "questions": [
+        {
+          "id": "sust_p1",
+          "type": "choice",
+          "label": "**1.** Ao definir critérios para a escolha de provedores de Cloud Computing, qual é a relevância da eficiência energética dos data centers?",
+          "options": "relevance",
+          "required": true
+        },
+        {
+          "id": "sust_p2",
+          "type": "choice",
+          "label": "**2.** No processo de decisão sobre a contratação de serviços em nuvem, qual é a relevância das práticas de uso de energia renovável e redução de emissões?",
+          "options": "relevance",
+          "required": true
+        },
+        {
+          "id": "sust_p3",
+          "type": "text",
+          "label": "**3.** Em sua opinião, como a sustentabilidade deve ser considerada na contratação de serviços em nuvem?",
+          "placeholder": "Opcional",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "performance",
+      "badge": "B",
+      "title": "Desempenho",
+      "questions": [
+        {
+          "id": "perf_p1",
+          "type": "choice",
+          "label": "**4.** Na avaliação de provedores de Cloud Computing, qual é a relevância da disponibilidade (uptime) dos serviços?",
+          "options": "relevance",
+          "required": true
+        },
+        {
+          "id": "perf_p2",
+          "type": "choice",
+          "label": "**5.** No processo de escolha do provedor, qual é a relevância do suporte técnico e do tempo de resposta a incidentes?",
+          "options": "relevance",
+          "required": true
+        },
+        {
+          "id": "perf_p3",
+          "type": "text",
+          "label": "**6.** Cite um exemplo de problema de desempenho que impactaria a continuidade dos serviços da instituição?",
+          "placeholder": "Opcional",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "security",
+      "badge": "C",
+      "title": "Segurança",
+      "questions": [
+        {
+          "id": "sec_p1",
+          "type": "choice",
+          "label": "**7.** Ao selecionar um provedor de Cloud Computing, qual é a relevância das certificações de segurança da informação (ex.: ISO 27001, SOC 2, GDPR)?",
+          "options": "relevance",
+          "required": true
+        },
+        {
+          "id": "sec_p2",
+          "type": "choice",
+          "label": "**8.** No contexto da segurança da informação, qual é a relevância dos mecanismos de backup e recuperação de desastres como requisitos mínimos do serviço?",
+          "options": "relevance",
+          "required": true
+        },
+        {
+          "id": "sec_p3",
+          "type": "text",
+          "label": "**9.** Em sua percepção, quais medidas de segurança são indispensáveis em provedores de Cloud?",
+          "placeholder": "Opcional",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "comparisons",
+      "badge": "D",
+      "title": "Comparações indiretas",
+      "questions": [
+        {
+          "id": "comp_p1",
+          "type": "choice",
+          "label": "**10.** Quando há necessidade de priorizar recursos, sua instituição tende a valorizar mais:",
+          "options": ["Sustentabilidade ambiental", "Desempenho e estabilidade", "Segurança da informação"],
+          "required": true
+        },
+        {
+          "id": "comp_p2",
+          "type": "choice",
+          "label": "**11.** Se fosse necessário renunciar a um dos três aspectos (sustentabilidade, desempenho ou segurança), qual teria menor impacto na sua operação?",
+          "options": ["Sustentabilidade", "Desempenho", "Segurança"],
+          "required": true
+        },
+        {
+          "id": "comp_p3",
+          "type": "choice",
+          "label": "**12.** Em decisões estratégicas, qual dimensão costuma receber maior atenção dos gestores?",
+          "options": ["Sustentabilidade", "Desempenho", "Segurança"],
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "global",
+      "badge": "E",
+      "title": "Avaliação global",
+      "questions": [
+        {
+          "id": "global_p1",
+          "type": "choice",
+          "label": "**13.** Considerando provedores de mercado (AWS, Azure, Google Cloud), qual você percebe como mais alinhado às demandas da sua instituição?",
+          "options": ["AWS", "Azure", "Google Cloud", "Nenhum / On-Premise"],
+          "required": true
+        },
+        {
+          "id": "global_p2",
+          "type": "choice",
+          "label": "**14.** Qual fator mais influenciaria uma mudança de provedor?",
+          "options": ["Sustentabilidade e responsabilidade ambiental", "Desempenho e escalabilidade", "Segurança e conformidade", "Custo total de propriedade"],
+          "required": true
+        },
+        {
+          "id": "global_p3",
+          "type": "text",
+          "label": "**15.** Em uma frase, descreva o que significa \"provedor ideal\" para sua instituição.",
+          "placeholder": "Opcional",
+          "required": false
+        }
+      ]
+    }
+  ]
+}
