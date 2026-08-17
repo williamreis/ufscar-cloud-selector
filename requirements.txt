@@ -20,8 +20,16 @@ langchain-ollama>=0.2
 faiss-cpu>=1.8
 
 openai>=1.40
+
+# Persistência de auditoria (SQLite via ORM; troca para Postgres é só a URL)
+sqlalchemy>=2.0
+
 numpy>=1.26
 pandas>=2.2
 sentence-transformers>=3.0
 pypdf>=4.2
 requests>=2.32
+
+# Frontend (Streamlit)
+streamlit>=1.37
+plotly>=5.22
