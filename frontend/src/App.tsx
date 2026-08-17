@@ -6,6 +6,7 @@ import Questionnaire from "./pages/Questionnaire";
 import Results from "./pages/Results";
 import Ingest from "./pages/Ingest";
 import Control from "./pages/Control";
+import Admin from "./pages/Admin";
 
 export default function App() {
   return (
@@ -19,6 +20,8 @@ export default function App() {
             <Route path="/results" element={<Results />} />
             <Route path="/ingest" element={<Ingest />} />
             <Route path="/control" element={<Control />} />
+            <Route path="/admin" element={<Admin />} />
+            <Route path="/admin/:id" element={<Admin />} />
           </Routes>
         </main>
         <footer className="text-center text-xs text-slate-400 py-6">

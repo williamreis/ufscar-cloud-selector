@@ -1,49 +1,65 @@
-import { useState } from "react";
-import { ingestGlobal } from "../api";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { adminLogin, adminSessionValid, ingestGlobal, setAdminToken } from "../api";
 import type { IngestResult } from "../types";
 
-// Obs.: assim como na versão anterior (Streamlit), esta senha só esconde o botão
-// da UI — o endpoint /api/documents/ingest-global no backend não tem autenticação
-// própria, então isto é obscuridade de interface, não controle de acesso real.
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || "admin";
-
 export default function Control() {
-  const [authenticated, setAuthenticated] = useState(false);
+  // A senha agora é conferida no servidor e o endpoint de ingestão exige o token
+  // — antes a comparação era no bundle do navegador e a rota ficava aberta.
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<IngestResult | null>(null);
 
+  useEffect(() => {
+    adminSessionValid().then(setAuthenticated);
+  }, []);
+
+  async function login(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      await adminLogin(password);
+      setPassword("");
+      setAuthenticated(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  if (authenticated === null) {
+    return <p className="text-sm text-slate-400">Verificando sessão…</p>;
+  }
+
   if (!authenticated) {
     return (
-      <div className="max-w-sm">
+      <form onSubmit={login} className="max-w-sm">
         <h1 className="text-xl font-bold text-slate-900 mb-2">Acesso restrito</h1>
         <p className="text-sm text-slate-500 mb-4">
-          Acesso ao painel de ingestão de documentos do administrador (data/pdf). Não há link no
-          menu — acesse digitando <code>/control</code> na URL.
+          Painel de ingestão dos documentos do administrador (data/pdf). Usa a mesma senha da{" "}
+          <Link to="/admin" className="underline">
+            área de gestão
+          </Link>
+          , definida em <code>ADMIN_PASSWORD</code> no backend.
         </p>
         <input
           type="password"
+          autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Senha de administrador"
           className="w-full rounded-lg border border-slate-400 px-3 py-2.5 text-sm mb-3"
         />
         <button
-          onClick={() => {
-            if (password === ADMIN_PASSWORD) {
-              setAuthenticated(true);
-              setError(null);
-            } else {
-              setError("Senha incorreta.");
-            }
-          }}
-          className="w-full rounded-lg bg-slate-900 text-white px-4 py-2.5 text-sm font-semibold"
+          type="submit"
+          disabled={!password}
+          className="w-full rounded-lg bg-slate-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
         >
           Entrar
         </button>
         {error && <p className="text-red-600 text-sm mt-2">{error}</p>}
-      </div>
+      </form>
     );
   }
 
@@ -54,9 +70,20 @@ export default function Control() {
         Ingestão dos documentos em <code>data/pdf</code>. Esses arquivos são consultados em{" "}
         <strong>todas</strong> as buscas RAG.
       </p>
-      <button onClick={() => setAuthenticated(false)} className="text-sm text-slate-500 hover:underline mb-6">
-        Sair do painel
-      </button>
+      <div className="mb-6 flex gap-4 text-sm">
+        <Link to="/admin" className="text-blue-600 hover:underline">
+          Ir para a área de gestão →
+        </Link>
+        <button
+          onClick={() => {
+            setAdminToken(null);
+            setAuthenticated(false);
+          }}
+          className="text-slate-500 hover:underline"
+        >
+          Sair do painel
+        </button>
+      </div>
 
       <button
         onClick={async () => {

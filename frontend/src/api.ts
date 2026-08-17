@@ -1,8 +1,11 @@
 import type {
+  AdminStats,
   IngestResult,
   QuestionsFile,
   RecommendationResponse,
   RecommendPayload,
+  SubmissionDetail,
+  SubmissionListItem,
   UploadedFile,
 } from "./types";
 
@@ -57,8 +60,120 @@ export async function ingestSession(sessionId: string): Promise<IngestResult> {
 }
 
 export async function ingestGlobal(): Promise<IngestResult> {
-  const res = await fetch(`${API_BASE}/documents/ingest-global`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/documents/ingest-global`, {
+    method: "POST",
+    headers: adminHeaders(),
+  });
   return asJson<IngestResult>(res);
+}
+
+// ===========================================================================
+// Área de gestão
+//
+// O token vive em sessionStorage: sobrevive à navegação entre páginas e some
+// quando a aba fecha. Não é "lembrar de mim" — é evitar pedir a senha a cada
+// clique dentro do painel.
+// ===========================================================================
+
+const TOKEN_KEY = "cloud-selector-admin-token";
+
+export function getAdminToken(): string | null {
+  return sessionStorage.getItem(TOKEN_KEY);
+}
+
+export function setAdminToken(token: string | null): void {
+  if (token) sessionStorage.setItem(TOKEN_KEY, token);
+  else sessionStorage.removeItem(TOKEN_KEY);
+}
+
+function adminHeaders(): Record<string, string> {
+  const token = getAdminToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** Erro de autenticação, para a UI voltar à tela de login em vez de mostrar texto cru. */
+export class AdminAuthError extends Error {}
+
+async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}/admin${path}`, { ...init, headers: adminHeaders() });
+  if (res.status === 401) {
+    setAdminToken(null);
+    throw new AdminAuthError("Sessão expirada. Faça login novamente.");
+  }
+  return asJson<T>(res);
+}
+
+export async function adminLogin(password: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/admin/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((d) => d?.detail)
+      .catch(() => null);
+    throw new Error(detail || `Erro ${res.status}`);
+  }
+  const data = (await res.json()) as { token: string };
+  setAdminToken(data.token);
+}
+
+export async function adminSessionValid(): Promise<boolean> {
+  if (!getAdminToken()) return false;
+  try {
+    await adminFetch<{ ok: boolean }>("/session");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function adminStats(): Promise<AdminStats> {
+  return adminFetch<AdminStats>("/stats");
+}
+
+export function adminSubmissions(
+  limit: number,
+  offset: number,
+  search: string,
+): Promise<{ items: SubmissionListItem[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (search.trim()) params.set("search", search.trim());
+  return adminFetch(`/submissions?${params.toString()}`);
+}
+
+export function adminSubmission(id: string): Promise<SubmissionDetail> {
+  return adminFetch<SubmissionDetail>(`/submissions/${encodeURIComponent(id)}`);
+}
+
+/** Exclusão definitiva — não há lixeira no backend. */
+export function adminDeleteSubmission(id: string): Promise<{ deleted: string }> {
+  return adminFetch(`/submissions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/**
+ * Baixa o CSV. Passa pelo fetch (e não por um <a href>) porque o endpoint exige
+ * o header Authorization, que um link comum não carrega.
+ */
+export async function adminExportCsv(): Promise<void> {
+  const res = await fetch(`${API_BASE}/admin/export.csv`, { headers: adminHeaders() });
+  if (res.status === 401) {
+    setAdminToken(null);
+    throw new AdminAuthError("Sessão expirada. Faça login novamente.");
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Erro ${res.status}: ${text || res.statusText}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "questionarios.csv";
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 /**
