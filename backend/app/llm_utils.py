@@ -132,28 +132,31 @@ def get_llm():
 # Prompt para análise de pesos AHP
 # ===============================
 WEIGHTS_PROMPT = PromptTemplate(
-    input_variables=["qa_pairs", "numeric_scores", "comparative_adjustments"],
+    input_variables=["qa_pairs", "relevance", "criteria_weights"],
     template="""
 Você é um assistente especialista em Cloud Computing e decisão multicritério (AHP).
-O gestor respondeu um questionário sobre sustentabilidade, desempenho e segurança de provedores de nuvem.
+O gestor respondeu um questionário sobre sustentabilidade, desempenho operacional
+e segurança da informação na seleção de provedores de nuvem.
 
 Perguntas e respostas do gestor (na íntegra):
 {qa_pairs}
 
-Intensidade já calculada pelas perguntas fechadas (escala 1–5): {numeric_scores}
-Deslocamento já aplicado pelas perguntas comparativas: {comparative_adjustments}
+Relevância média dos indicadores por dimensão (escala 1–5): {relevance}
+Pesos das dimensões já calculados pelo AHP a partir das comparações par a par: {criteria_weights}
 
-Sua tarefa é APENAS refinar essas intensidades com base no que o gestor escreveu
-nas respostas dissertativas — as perguntas fechadas já foram contabilizadas, não
-as recalcule. Para cada dimensão, informe um ajuste entre -1.0 e +1.0:
-  - positivo se o texto revela prioridade maior do que as respostas fechadas indicam
-  - negativo se revela prioridade menor
-  - 0 se o texto não traz informação adicional sobre aquela dimensão
+Sua tarefa é APENAS redigir a justificativa da decisão. Os pesos já foram
+calculados pelo código de forma determinística — não os recalcule, não proponha
+outros valores e não invente critérios ou indicadores fora dos três acima.
 
-Depois, escreva uma justificativa curta (2 a 4 frases) citando o que o gestor disse.
+Escreva de 3 a 5 frases que:
+  - expliquem a prioridade entre as dimensões usando os pesos informados;
+  - citem o que o gestor escreveu nas respostas dissertativas (requisitos
+    obrigatórios, características esperadas e aspectos não contemplados);
+  - apontem, se houver, tensão entre o que o texto livre revela e o que as
+    comparações par a par indicaram.
 
 Retorne APENAS um JSON válido no formato:
-{{"criteria_adjustments":{{"sustainability":0.0,"performance":0.5,"security":-0.25}},"notes":"texto explicativo"}}
+{{"notes":"texto explicativo"}}
 """
 )
 
@@ -161,15 +164,15 @@ Retorne APENAS um JSON válido no formato:
 # ===============================
 # Função principal para extrair pesos e notas
 # ===============================
-async def llm_extract_weights_and_notes(
+async def llm_explain_preferences(
     qa_pairs: List[Dict[str, str]],
-    numeric_scores: dict,
-    comparative_adjustments: dict,
+    relevance: dict,
+    criteria_weights: dict,
 ):
     """
-    Pede ao LLM um ajuste fino das intensidades (não os pesos finais) a partir das
-    respostas dissertativas, mais a justificativa textual. Os pesos em si saem do
-    AHP, para que o cálculo continue determinístico e auditável.
+    Pede ao LLM apenas a justificativa textual da decisão. Os pesos saem do AHP,
+    a partir das comparações par a par da seção D, e não passam pelo LLM — assim
+    o cálculo continua determinístico, reprodutível e auditável.
     """
     llm = get_llm()
     chain = WEIGHTS_PROMPT | llm
@@ -179,8 +182,8 @@ async def llm_extract_weights_and_notes(
     resp_message = await chain.ainvoke(
         {
             "qa_pairs": formatted_qa,
-            "numeric_scores": numeric_scores,
-            "comparative_adjustments": comparative_adjustments,
+            "relevance": {k: round(float(v), 2) for k, v in relevance.items()},
+            "criteria_weights": {k: round(float(v), 4) for k, v in criteria_weights.items()},
         }
     )
     resp_content = resp_message.content
@@ -195,20 +198,7 @@ async def llm_extract_weights_and_notes(
         except Exception:
             j = {}
 
-    # Sanitiza: só critérios conhecidos, só números, sempre dentro de [-1, 1].
-    raw = j.get("criteria_adjustments") or {}
-    adjustments = {}
-    for criterion in ("sustainability", "performance", "security"):
-        try:
-            value = float(raw.get(criterion, 0.0))
-        except (TypeError, ValueError):
-            value = 0.0
-        adjustments[criterion] = max(-1.0, min(1.0, value))
-
-    return {
-        "criteria_adjustments": adjustments,
-        "notes": j.get("notes") or (resp_content if not j else ""),
-    }
+    return {"notes": j.get("notes") or (resp_content if not j else "")}
 
 
 # ===============================

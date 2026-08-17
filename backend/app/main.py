@@ -1,18 +1,20 @@
 import asyncio
+import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import Depends, FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from typing import List, Dict, Optional
 
-from schemas import QuestionnaireResponse, RecommendationResponse
+from schemas import CRITERIA, QuestionnaireResponse, RecommendationResponse
 from llm_utils import (
-    llm_extract_weights_and_notes,
+    llm_explain_preferences,
     rag_query_documents,
     ingest_documents_from_paths,
     count_chunks_by_provider,
@@ -22,8 +24,26 @@ from llm_utils import (
 )
 from ahp import compute_ahp_ranking, derive_criteria_weights
 from providers_data import PROVIDERS, PROVIDER_SCORES_PROVENANCE
+import auth
+import db
+from admin import router as admin_router
 
-app = FastAPI(title="Cloud Provider Selector API")
+logger = logging.getLogger("uvicorn.error")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Cria o banco de auditoria se ainda não existir (idempotente)."""
+    db.init_db()
+    if not auth.is_configured():
+        logger.warning(
+            "ADMIN_PASSWORD não definido: a área de gestão (/api/admin) fica indisponível."
+        )
+    yield
+
+
+app = FastAPI(title="Cloud Provider Selector API", lifespan=lifespan)
+app.include_router(admin_router)
 
 # Em produção o nginx do frontend faz proxy same-origin para /api (CORS nem entra
 # em jogo). Isso aqui existe só para permitir `npm run dev` (Vite) local direto
@@ -57,36 +77,33 @@ async def recommend(q: QuestionnaireResponse):
     e retorna ranking de provedores com justificativas e evidências.
     """
 
-    # 1) Perguntas de relevância (A, B, C) → intensidade média 1-5 por dimensão
-    numeric_scores = q.to_numeric_scores()
+    # 1) Comparações par a par (seção D) → matriz de julgamentos do gestor.
+    #    É a única fonte dos pesos entre dimensões. O gestor informa a dimensão
+    #    prioritária e a intensidade verbal; a razão de Saaty correspondente é
+    #    derivada aqui no servidor (pairwise.py), nunca aceita pronta do cliente.
+    judgments = q.pairwise_judgments()
 
-    # 2) Perguntas comparativas (D, E) → deslocamento de intensidade.
-    #    Antes essas respostas eram descartadas: não estavam na escala de
-    #    relevância nem eram texto livre, então não entravam em nenhum cálculo.
-    comparative_adjustments = q.comparative_adjustments()
+    # 2) Perguntas de relevância (A, B, C) → média 1-5 por dimensão.
+    #    Mede a relevância dos indicadores dentro de cada dimensão; não é
+    #    convertida para a escala de Saaty (são conceitos distintos), então entra
+    #    na memória de cálculo e no contexto do LLM, não nos pesos.
+    relevance = q.relevance_by_criterion()
 
-    # 3) LLM refina as intensidades a partir das respostas dissertativas.
-    #    Recebe o enunciado de cada pergunta junto da resposta — antes via apenas
-    #    o question_id, sem saber o que havia sido perguntado.
-    llm_result = await llm_extract_weights_and_notes(
-        qa_pairs=q.qa_for_llm(),
-        numeric_scores=numeric_scores,
-        comparative_adjustments=comparative_adjustments,
-    )
-    llm_adjustments = llm_result["criteria_adjustments"]
-    notes = llm_result.get("notes", "")
-
-    # 4) Intensidade final por critério, limitada à escala 1-5
-    intensities = {
-        c: max(1.0, min(5.0, numeric_scores[c] + comparative_adjustments[c] + llm_adjustments[c]))
-        for c in numeric_scores
-    }
-
-    # 5) AHP: matriz de comparação par a par → autovetor → pesos + consistência
-    ahp_result = derive_criteria_weights(intensities)
+    # 3) AHP: matriz de comparação par a par → autovetor → pesos + consistência
+    ahp_result = derive_criteria_weights(judgments, CRITERIA)
     criteria_weights = ahp_result["weights"]
 
-    # 6) Só entram no ranking os provedores com base documental indexada.
+    # 4) LLM redige a justificativa a partir das respostas dissertativas e dos
+    #    pesos já calculados. Ele não altera nenhum número: o cálculo permanece
+    #    determinístico e reprodutível a partir das respostas fechadas.
+    llm_result = await llm_explain_preferences(
+        qa_pairs=q.qa_for_llm(),
+        relevance=relevance,
+        criteria_weights=criteria_weights,
+    )
+    notes = llm_result.get("notes", "")
+
+    # 5) Só entram no ranking os provedores com base documental indexada.
     #    Sem documentos não há como sustentar a avaliação com evidência, então o
     #    provedor é excluído do relatório em vez de aparecer com nota sem lastro.
     chunk_counts = await run_in_threadpool(count_chunks_by_provider)
@@ -106,10 +123,11 @@ async def recommend(q: QuestionnaireResponse):
             ),
         )
 
-    # 7) Síntese das prioridades das alternativas
-    ranking = compute_ahp_ranking(criteria_weights, evaluated)
+    # 6) Síntese das prioridades das alternativas, com a memória de cálculo
+    #    célula a célula (nota → normalizada → contribuição → score).
+    ranking, synthesis = compute_ahp_ranking(criteria_weights, evaluated)
 
-    # 8) Matriz de scores por provedor (para dashboard: tabela e gráficos)
+    # 7) Matriz de scores por provedor (para dashboard: tabela e gráficos)
     providers_by_id = {p["id"]: p for p in evaluated}
     criteria_keys = list(criteria_weights.keys())
     provider_scores = []
@@ -124,7 +142,7 @@ async def recommend(q: QuestionnaireResponse):
             **{c: round(float(scores.get(c, 0.5)), 4) for c in criteria_keys},
         })
 
-    # 9) RAG para evidências, uma busca por (provedor × critério), de modo que cada
+    # 8) RAG para evidências, uma busca por (provedor × critério), de modo que cada
     #    trecho recuperado fique atrelado ao indicador que ele sustenta.
     session_id = getattr(q, "session_id", None) or None
     evidences: Dict[str, list] = {}
@@ -147,7 +165,7 @@ async def recommend(q: QuestionnaireResponse):
                 items.append({**h, "criterion": criterion})
         evidences[pid] = items
 
-    # 10) Montar resposta
+    # 9) Montar resposta
     response = {
         "ranking": ranking.to_dict(orient="records"),
         "criteria_weights": criteria_weights,
@@ -157,10 +175,12 @@ async def recommend(q: QuestionnaireResponse):
         # Memória de cálculo do AHP, para o relatório poder ser auditado
         "ahp": {
             **ahp_result,
-            "base_scores": numeric_scores,
-            "comparative_adjustments": comparative_adjustments,
-            "llm_adjustments": llm_adjustments,
+            # Perfil de relevância dos indicadores (1-5) por dimensão: contexto do
+            # relatório, fora do cálculo dos pesos (ver relevance_by_criterion).
+            "relevance_by_criterion": relevance,
         },
+        # Memória de cálculo da síntese: como cada score final foi obtido
+        "synthesis": synthesis,
         # Respostas fora do cálculo numérico (ver docstring de unscored_answers)
         "unscored_answers": q.unscored_answers(),
         # Cobertura documental: quem foi avaliado e quem ficou de fora, e por quê
@@ -173,6 +193,17 @@ async def recommend(q: QuestionnaireResponse):
             "scores_provenance": PROVIDER_SCORES_PROVENANCE,
         },
     }
+
+    # 10) Persistir para auditoria. Uma falha aqui não descarta o resultado que o
+    #     gestor acabou de gerar — o relatório é devolvido com submission_id nulo,
+    #     e a UI avisa que aquele envio não entrou no registro.
+    try:
+        response["submission_id"] = await run_in_threadpool(
+            db.save_submission, q.audit_payload(), response
+        )
+    except Exception:
+        logger.exception("Falha ao gravar o envio no banco de auditoria")
+        response["submission_id"] = None
 
     return response
 
@@ -268,7 +299,7 @@ async def list_uploaded_documents(session_id: Optional[str] = None):
     return {"files": files}
 
 
-@app.post("/api/documents/ingest-global")
+@app.post("/api/documents/ingest-global", dependencies=[Depends(auth.require_admin)])
 async def run_ingest_global():
     """
     Ingestão dos documentos em data/pdf (incluídos pelo administrador).

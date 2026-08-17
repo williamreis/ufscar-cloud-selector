@@ -1,24 +1,22 @@
 """
 Analytic Hierarchy Process (Saaty).
 
-A versão anterior deste módulo fazia apenas uma soma ponderada (Simple Additive
-Weighting) e chamava o resultado de AHP: não havia matriz de comparação par a par,
-nem derivação de prioridades por autovetor, nem razão de consistência.
-
-Aqui o método está implementado de fato:
-  1. as intensidades por critério (escala 1-5, vindas do questionário) viram uma
-     matriz de comparação par a par na escala de Saaty (1-9);
+O método está implementado por completo:
+  1. a matriz de comparação par a par vem direto da seção D do questionário, em
+     que o gestor informa qual dimensão prioriza e com que intensidade verbal —
+     elicitação clássica, convertida para a razão de Saaty em `pairwise.py`;
   2. as prioridades saem do autovetor principal dessa matriz;
-  3. a razão de consistência (CR) é calculada e reportada.
+  3. a razão de consistência (CR) é calculada e reportada — e aqui ela mede a
+     coerência real dos julgamentos do gestor.
 
-Ressalva honesta sobre o passo 1: no AHP clássico o gestor informa cada comparação
-diretamente ("quanto A é mais importante que B, de 1 a 9"). Aqui a matriz é
-*derivada* das respostas do questionário, o que é uma adaptação — o questionário
-não pede as comparações uma a uma. A derivação é determinística e auditável (a
-matriz vai na resposta da API), mas não substitui a elicitação par a par direta.
+As perguntas de relevância (escala 1-5, seções A/B/C) NÃO entram nesta matriz.
+Relevância individual de um indicador e preferência relativa entre duas dimensões
+são conceitos distintos; convertê-los um no outro produziria julgamentos que o
+gestor nunca deu. Aquelas respostas são reportadas à parte, como perfil de
+prioridade dos indicadores dentro de cada dimensão.
 """
 
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -35,31 +33,43 @@ def normalize_weights(raw_weights: dict) -> dict:
     return {k: (v / s if s > 0 else 1 / len(raw_weights)) for k, v in raw_weights.items()}
 
 
-def intensities_to_pairwise_matrix(intensities: Dict[str, float]) -> Tuple[List[str], np.ndarray]:
+def judgments_to_pairwise_matrix(
+    judgments: Dict[str, Dict[str, Any]],
+    criteria: Sequence[str],
+) -> Tuple[List[str], np.ndarray, List[str]]:
     """
-    Converte intensidades (1-5) em matriz de comparação par a par recíproca.
+    Monta a matriz recíproca a partir dos julgamentos diretos da seção D.
 
-    A diferença de intensidade entre dois critérios vira uma razão na escala ímpar
-    de Saaty: diferença 0 → 1 (igual), 1 → 3 (moderada), 2 → 5 (forte),
-    3 → 7 (muito forte), 4 → 9 (extrema). O recíproco é atribuído ao par inverso,
-    o que garante a_ij = 1/a_ji e diagonal unitária.
+    `judgments` é chaveado por "<critério A>|<critério B>" e traz a razão a_ij na
+    escala de Saaty (1, 3, 5, 7, 9 e recíprocos). Cada julgamento preenche a_ij e
+    a_ji = 1/a_ij, o que garante reciprocidade e diagonal unitária.
+
+    Pares sem julgamento ficam em 1 (indiferença) e são devolvidos na lista de
+    faltantes, para que a resposta da API deixe explícito que aquela célula não
+    veio do gestor.
     """
-    keys = list(intensities.keys())
+    keys = list(criteria)
     n = len(keys)
     matrix = np.ones((n, n), dtype=float)
+    missing: List[str] = []
 
     for i in range(n):
         for j in range(i + 1, n):
-            diff = intensities[keys[i]] - intensities[keys[j]]
-            ratio = min(1.0 + 2.0 * abs(diff), 9.0)
-            if diff >= 0:
-                matrix[i][j] = ratio
-                matrix[j][i] = 1.0 / ratio
+            direct = judgments.get(f"{keys[i]}|{keys[j]}")
+            inverse = judgments.get(f"{keys[j]}|{keys[i]}")
+            if direct is not None:
+                ratio = float(direct["ratio"])
+            elif inverse is not None:
+                ratio = 1.0 / float(inverse["ratio"])
             else:
-                matrix[i][j] = 1.0 / ratio
-                matrix[j][i] = ratio
+                missing.append(f"{keys[i]}|{keys[j]}")
+                continue
 
-    return keys, matrix
+            ratio = min(max(ratio, 1.0 / 9.0), 9.0)
+            matrix[i][j] = ratio
+            matrix[j][i] = 1.0 / ratio
+
+    return keys, matrix, missing
 
 
 def priority_vector(matrix: np.ndarray, max_iter: int = 500, tol: float = 1e-12):
@@ -94,19 +104,36 @@ def priority_vector(matrix: np.ndarray, max_iter: int = 500, tol: float = 1e-12)
     return w, lambda_max, consistency_index, consistency_ratio
 
 
-def derive_criteria_weights(intensities: Dict[str, float]) -> Dict[str, object]:
+def derive_criteria_weights(
+    judgments: Dict[str, Dict[str, Any]],
+    criteria: Sequence[str],
+) -> Dict[str, object]:
     """
-    Pipeline completo do AHP para os critérios: intensidades → matriz par a par →
+    Pipeline completo do AHP para os critérios: julgamentos par a par → matriz →
     autovetor → pesos + diagnóstico de consistência.
     """
-    keys, matrix = intensities_to_pairwise_matrix(intensities)
+    keys, matrix, missing = judgments_to_pairwise_matrix(judgments, criteria)
     weights, lambda_max, ci, cr = priority_vector(matrix)
 
     return {
         "weights": {k: float(w) for k, w in zip(keys, weights)},
         "criteria_order": keys,
         "pairwise_matrix": [[round(float(v), 4) for v in row] for row in matrix],
-        "intensities": {k: round(float(v), 3) for k, v in intensities.items()},
+        # Além da razão, o julgamento como o gestor o informou (dimensão
+        # priorizada + intensidade verbal) e a frase legível equivalente: a
+        # memória de cálculo mostra a resposta, não só o número derivado dela.
+        "judgments": {
+            k: {
+                "ratio": round(float(v["ratio"]), 4),
+                "choice": v.get("choice"),
+                "question_id": v.get("question_id"),
+                "preference": v.get("preference"),
+                "intensity": v.get("intensity"),
+                "saaty_intensity": v.get("saaty_intensity"),
+            }
+            for k, v in judgments.items()
+        },
+        "missing_judgments": missing,
         "lambda_max": round(float(lambda_max), 4),
         "consistency_index": round(float(ci), 4),
         "consistency_ratio": round(float(cr), 4),
@@ -115,13 +142,20 @@ def derive_criteria_weights(intensities: Dict[str, float]) -> Dict[str, object]:
     }
 
 
-def compute_ahp_ranking(criteria_weights: dict, providers: list) -> pd.DataFrame:
+def compute_ahp_ranking(criteria_weights: dict, providers: list) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Síntese das prioridades das alternativas (modo distributivo do AHP): as notas
     de cada provedor são normalizadas dentro de cada critério (somam 1 por
     critério) antes da agregação ponderada. Por isso as prioridades finais também
-    somam 1 entre os provedores — diferente da soma ponderada anterior, cujos
-    scores ficavam na faixa 0-1 de cada nota bruta.
+    somam 1 entre os provedores — diferente de uma soma ponderada simples, cujos
+    scores ficariam na faixa 0-1 de cada nota bruta.
+
+    Devolve o ranking e a memória de cálculo da síntese, célula a célula, para que
+    o score final possa ser reconstruído à mão a partir do relatório:
+
+        normalizada = nota / soma das notas do critério
+        contribuição = peso do critério × normalizada
+        score = Σ contribuições
     """
     cw = normalize_weights(criteria_weights)
 
@@ -131,16 +165,41 @@ def compute_ahp_ranking(criteria_weights: dict, providers: list) -> pd.DataFrame
     }
 
     rows = []
+    audit_providers = []
     for p in providers:
         priority = 0.0
+        cells = {}
         for c, w in cw.items():
             value = p["scores"].get(c, 0.5)
             total = column_totals.get(c, 0.0)
             normalized = (value / total) if total > 0 else (1.0 / len(providers))
-            priority += w * normalized
+            contribution = w * normalized
+            priority += contribution
+            cells[c] = {
+                "raw": round(float(value), 4),
+                "normalized": round(float(normalized), 6),
+                "weight": round(float(w), 6),
+                "contribution": round(float(contribution), 6),
+            }
         rows.append({"id": p["id"], "name": p["name"], "score": priority})
+        audit_providers.append(
+            {"id": p["id"], "name": p["name"], "cells": cells, "score": round(float(priority), 6)}
+        )
 
     df = pd.DataFrame(rows)
     df = df.sort_values(by="score", ascending=False).reset_index(drop=True)
     df["rank"] = df.index + 1
-    return df
+
+    order = {pid: i for i, pid in enumerate(df["id"])}
+    audit_providers.sort(key=lambda a: order.get(a["id"], len(order)))
+
+    synthesis = {
+        "mode": "distributive",
+        "criteria_order": list(cw.keys()),
+        "weights": {c: round(float(w), 6) for c, w in cw.items()},
+        "column_totals": {c: round(float(t), 4) for c, t in column_totals.items()},
+        "providers": audit_providers,
+        # Deve ser 1 (a menos de arredondamento): serve de verificação no relatório.
+        "score_total": round(float(sum(r["score"] for r in rows)), 6),
+    }
+    return df, synthesis
