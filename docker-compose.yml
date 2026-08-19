@@ -7,6 +7,8 @@ services:
     working_dir: /app/app
     env_file:
       - ./backend/.env
+    environment:
+      QUESTIONS_JSON_PATH: /app/questionnaire/questions.json
     ports:
       - "8001:8000"
     volumes:
@@ -15,6 +17,8 @@ services:
       # não é necessário um bind mount extra por subpasta.
       - ./backend/data:/app/data
       - ./backend/scripts:/app/scripts
+      - ./backend/methodology:/app/methodology
+      - ./frontend/public/questions.json:/app/questionnaire/questions.json:ro
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
