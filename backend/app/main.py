@@ -1,44 +1,70 @@
 import asyncio
 import logging
 import os
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
-from typing import List, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from schemas import CRITERIA, QuestionnaireResponse, RecommendationResponse
-from llm_utils import (
-    llm_explain_preferences,
-    rag_query_documents,
-    ingest_documents_from_paths,
-    count_chunks_by_provider,
-    CRITERIA_QUERIES,
-    METADATA_SOURCE_GLOBAL,
-    METADATA_SOURCE_SESSION,
-)
-from ahp import compute_ahp_ranking, derive_criteria_weights
-from providers_data import PROVIDERS, PROVIDER_SCORES_PROVENANCE
+import audit
 import auth
 import db
+import rag
 from admin import router as admin_router
+from ahp import compute_ahp_ranking, derive_criteria_weights
+from config import get_settings
+from domain import get_methodology, weights_from_answers
+from guardrails import (
+    GuardrailLog,
+    GuardrailRejection,
+    enforce_document_quota,
+    resolve_within,
+    validate_upload,
+)
+from llm.prompts import registered_versions
+from preferences import explain_preferences
+from providers_data import PROVIDERS, PROVIDER_SCORES_PROVENANCE
+from rag.metadata import SCOPE_GLOBAL, evaluation_scope
+from schemas import CRITERIA, QuestionnaireResponse, RecommendationResponse
 
 logger = logging.getLogger("uvicorn.error")
+
+# Estados de uma avaliação (§26). O ranking só é considerado íntegro em
+# COMPLETED; COMPLETED_WITH_LIMITATIONS registra que algo faltou sem transformar
+# a falha em pontuação presumida.
+STATUS_COMPLETED = "COMPLETED"
+STATUS_COMPLETED_WITH_LIMITATIONS = "COMPLETED_WITH_LIMITATIONS"
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Cria o banco de auditoria se ainda não existir (idempotente)."""
+    """Cria/atualiza o banco de auditoria (idempotente) e confere a configuração."""
     db.init_db()
+    settings = get_settings()
     if not auth.is_configured():
         logger.warning(
             "ADMIN_PASSWORD não definido: a área de gestão (/api/admin) fica indisponível."
         )
+    fingerprint = audit.questionnaire_fingerprint()
+    if fingerprint.get("questions_hash") is None:
+        logger.warning(
+            "questions.json não pôde ser lido em %s (%s): as avaliações ficarão sem "
+            "hash de versão do questionário.",
+            fingerprint.get("questions_source"),
+            fingerprint.get("unavailable_reason"),
+        )
+    logger.info(
+        "LLM=%s/%s · embeddings=%s/%s · algoritmo v%s",
+        settings.llm_provider,
+        settings.llm_model,
+        settings.embedding_provider,
+        settings.embedding_model,
+        settings.scoring_algorithm_version,
+    )
     yield
 
 
@@ -63,11 +89,15 @@ PDF_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_BASE_DIR = Path(os.getenv("UPLOAD_DIR", "../data/upload")).resolve()
 UPLOAD_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
-ALLOWED_EXTENSIONS = {".pdf", ".txt"}
-
 # Serializa gravações no índice FAISS: ingestão roda em threadpool (não bloqueia
 # o event loop), mas duas ingestões em paralelo poderiam colidir no save_local.
 _ingest_lock = asyncio.Lock()
+
+
+def _allowed_extensions() -> tuple:
+    return get_settings().allowed_upload_extensions
+
+
 
 
 @app.post("/api/recommend", response_model=RecommendationResponse)
@@ -76,6 +106,11 @@ async def recommend(q: QuestionnaireResponse):
     Recebe respostas do gestor, processa com LLM + RAG e AHP,
     e retorna ranking de provedores com justificativas e evidências.
     """
+    # Coletor de eventos de guardrail desta avaliação (§27). Acompanha a
+    # requisição inteira e é gravado junto do envio.
+    guardrail_log = GuardrailLog()
+    llm_runs: List[Dict[str, Any]] = []
+    rag_audit: List[Dict[str, Any]] = []
 
     # 1) Comparações par a par (seção D) → matriz de julgamentos do gestor.
     #    É a única fonte dos pesos entre dimensões. O gestor informa a dimensão
@@ -89,24 +124,38 @@ async def recommend(q: QuestionnaireResponse):
     #    na memória de cálculo e no contexto do LLM, não nos pesos.
     relevance = q.relevance_by_criterion()
 
-    # 3) AHP: matriz de comparação par a par → autovetor → pesos + consistência
+    # 3) AHP: matriz par a par → matriz normalizada → pesos + consistência.
+    #    O método (§6.3) e o limite de CR vêm da configuração metodológica.
     ahp_result = derive_criteria_weights(judgments, CRITERIA)
     criteria_weights = ahp_result["weights"]
+
+    # 3b) Pesos dos indicadores (§5.1 e §7). A partir daqui os blocos A/B/C têm
+    #     destino metodológico: relevância → coeficiente → peso local → peso
+    #     global (peso da dimensão × peso local). Indicador sem coeficiente
+    #     válido fica sem peso — nunca com zero, que afirmaria irrelevância.
+    methodology = get_methodology()
+    weight_set = weights_from_answers(q.answers_by_question(), criteria_weights, methodology)
 
     # 4) LLM redige a justificativa a partir das respostas dissertativas e dos
     #    pesos já calculados. Ele não altera nenhum número: o cálculo permanece
     #    determinístico e reprodutível a partir das respostas fechadas.
-    llm_result = await llm_explain_preferences(
-        qa_pairs=q.qa_for_llm(),
-        relevance=relevance,
-        criteria_weights=criteria_weights,
-    )
-    notes = llm_result.get("notes", "")
+    #    O texto do gestor passa pelos guardrails de entrada antes de chegar ao
+    #    prompt, e entra encapsulado como dado não confiável (§23.5 e §24).
+    try:
+        notes, llm_run = await explain_preferences(
+            qa_pairs=q.qa_for_llm(),
+            relevance=relevance,
+            criteria_weights=criteria_weights,
+            guardrail_log=guardrail_log,
+        )
+    except GuardrailRejection as exc:
+        raise HTTPException(status_code=422, detail=exc.event.reason) from exc
+    llm_runs.append(llm_run.as_dict())
 
     # 5) Só entram no ranking os provedores com base documental indexada.
     #    Sem documentos não há como sustentar a avaliação com evidência, então o
     #    provedor é excluído do relatório em vez de aparecer com nota sem lastro.
-    chunk_counts = await run_in_threadpool(count_chunks_by_provider)
+    chunk_counts = await run_in_threadpool(rag.count_chunks_by_provider)
     evaluated = [p for p in PROVIDERS if chunk_counts.get(p["id"], 0) > 0]
     excluded = [
         {"id": p["id"], "name": p["name"]}
@@ -142,30 +191,79 @@ async def recommend(q: QuestionnaireResponse):
             **{c: round(float(scores.get(c, 0.5)), 4) for c in criteria_keys},
         })
 
-    # 8) RAG para evidências, uma busca por (provedor × critério), de modo que cada
-    #    trecho recuperado fique atrelado ao indicador que ele sustenta.
+    # 8) RAG para evidências, uma busca por (provedor × dimensão), de modo que cada
+    #    trecho recuperado fique atrelado ao indicador que ele sustenta. Cada
+    #    consulta e os trechos que ela devolveu ficam registrados (§27, bloco RAG).
     session_id = getattr(q, "session_id", None) or None
     evidences: Dict[str, list] = {}
     for provider in evaluated:
         pid, pname = provider["id"], provider["name"]
         items = []
         for criterion in criteria_keys:
-            terms = CRITERIA_QUERIES.get(criterion, criterion)
+            query_text = f"{pname}: {rag.query_for(criterion)}"
             hits = await run_in_threadpool(
-                rag_query_documents,
-                f"{pname}: {terms}",
-                top_k=2,
-                session_id=session_id,
+                rag.search,
+                query_text,
                 # Restringe aos documentos deste provedor: sem isso, um provedor sem
                 # documentos indexados receberia trechos de outro provedor como
                 # "evidência" (a similaridade responde aos termos, não ao nome).
-                provider_id=pid,
+                2,
+                session_id,
+                pid,
+            )
+            rag_audit.append(
+                {
+                    "dimension": criterion,
+                    "provider_id": pid,
+                    "query_text": query_text,
+                    "top_k": 2,
+                    "chunks": hits,
+                }
             )
             for h in hits:
                 items.append({**h, "criterion": criterion})
         evidences[pid] = items
 
-    # 9) Montar resposta
+    # 9) Versões em vigor (§28): identificam com que questionário, algoritmo,
+    #    prompts, modelos e configuração metodológica este resultado foi produzido.
+    versions = {
+        **audit.runtime_versions(prompt_versions=registered_versions()),
+        **methodology.fingerprint(),
+    }
+
+    # Uma avaliação com guardrail recusado, LLM inválida ou questionário sem hash
+    # não é uma avaliação limpa — e isso fica dito, não escondido.
+    limitations: List[str] = []
+    if versions.get("questions_hash") is None:
+        limitations.append("Versão do questionário não pôde ser conferida (questions.json ilegível).")
+    if any(run["status"] != "OK" for run in llm_runs):
+        limitations.append("A justificativa textual não pôde ser gerada e validada.")
+    if excluded:
+        limitations.append(
+            f"{len(excluded)} provedor(es) fora da comparação por ausência de documentos indexados."
+        )
+    # §5.1: dimensão sem coeficiente válido pede revisão — o cálculo não inventa
+    # pesos iguais para tapar o buraco, então a lacuna precisa ser dita.
+    for dimension in weight_set.dimensions_needing_review:
+        nome = methodology.dimension_name(dimension)
+        limitations.append(
+            f"Dimensão {nome}: nenhum indicador com relevância informada — os pesos "
+            "locais não puderam ser calculados e a resposta precisa de revisão."
+        )
+    sem_peso = [w for w in weight_set.weights if w.global_weight is None]
+    if sem_peso and not weight_set.dimensions_needing_review:
+        limitations.append(
+            f"{len(sem_peso)} indicador(es) sem peso por ausência de resposta de relevância."
+        )
+    if not ahp_result.get("is_consistent", True):
+        limitations.append(
+            f"Razão de consistência do AHP acima do limite "
+            f"({ahp_result['consistency_ratio']} > {ahp_result['consistency_threshold']}): "
+            "os julgamentos par a par se contradizem e o ranking é preliminar."
+        )
+    status = STATUS_COMPLETED_WITH_LIMITATIONS if limitations else STATUS_COMPLETED
+
+    # 10) Montar resposta
     response = {
         "ranking": ranking.to_dict(orient="records"),
         "criteria_weights": criteria_weights,
@@ -181,6 +279,22 @@ async def recommend(q: QuestionnaireResponse):
         },
         # Memória de cálculo da síntese: como cada score final foi obtido
         "synthesis": synthesis,
+        # Pesos dos indicadores nos três níveis (§7), com a procedência de cada
+        # coeficiente. É o que permite reconstruir por que um indicador pesa o
+        # que pesa — se veio da dimensão priorizada ou da relevância declarada.
+        "indicator_weights": {
+            "indicators": [
+                {**weight.as_dict(), "name": methodology.by_id(weight.indicator_id).name}
+                for weight in weight_set.weights
+            ],
+            "dimensions_needing_review": list(weight_set.dimensions_needing_review),
+            "global_weight_sum": round(sum(weight_set.global_weights().values()), 6),
+            # O motor de desempenho/agregação por indicador está implementado e
+            # testado, mas ainda não tem fonte: a extração de evidência entra na
+            # Fase 2. Até lá o ranking continua vindo da síntese por dimensão, e
+            # nenhum valor por indicador é inventado para preencher a lacuna.
+            "performance_source": "pending_evidence_extraction",
+        },
         # Respostas fora do cálculo numérico (ver docstring de unscored_answers)
         "unscored_answers": q.unscored_answers(),
         # Cobertura documental: quem foi avaliado e quem ficou de fora, e por quê
@@ -192,14 +306,25 @@ async def recommend(q: QuestionnaireResponse):
             "excluded_no_documents": excluded,
             "scores_provenance": PROVIDER_SCORES_PROVENANCE,
         },
+        "versions": versions,
+        "status": status,
+        "limitations": limitations,
+        "guardrail_events": guardrail_log.as_dicts(),
     }
 
-    # 10) Persistir para auditoria. Uma falha aqui não descarta o resultado que o
+    # 11) Persistir para auditoria. Uma falha aqui não descarta o resultado que o
     #     gestor acabou de gerar — o relatório é devolvido com submission_id nulo,
     #     e a UI avisa que aquele envio não entrou no registro.
     try:
         response["submission_id"] = await run_in_threadpool(
-            db.save_submission, q.audit_payload(), response
+            db.save_submission,
+            q.audit_payload(),
+            response,
+            llm_runs,
+            guardrail_log.as_dicts(),
+            rag_audit,
+            status,
+            weight_set.as_dicts(),
         )
     except Exception:
         logger.exception("Falha ao gravar o envio no banco de auditoria")
@@ -220,6 +345,14 @@ def _upload_dir_for_session(session_id: str) -> Path:
     return d
 
 
+def _count_documents(directory: Path) -> int:
+    if not directory.is_dir():
+        return 0
+    return sum(
+        1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in _allowed_extensions()
+    )
+
+
 @app.post("/api/documents/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
@@ -228,51 +361,82 @@ async def upload_documents(
     """
     Recebe um ou mais arquivos (PDF ou TXT) e session_id (query), salva em data/upload/<session_id>.
     Esses arquivos são usados somente na sessão ativa; ingerir via POST /api/documents/ingest?session_id=...
+
+    Cada arquivo passa pelos guardrails da §23.3 **antes** de tocar o disco:
+    extensão, tamanho, assinatura real do conteúdo e nome saneado. Extensão certa
+    com conteúdo de executável não passa.
     """
     if not session_id:
         raise HTTPException(status_code=400, detail="Query 'session_id' é obrigatória para upload.")
     upload_dir = _upload_dir_for_session(session_id)
     if not files:
         raise HTTPException(status_code=400, detail="Nenhum arquivo enviado.")
+
+    guardrail_log = GuardrailLog()
+    try:
+        enforce_document_quota(
+            _count_documents(upload_dir), len(files), target=session_id, log=guardrail_log
+        )
+    except GuardrailRejection as exc:
+        raise HTTPException(status_code=413, detail=exc.event.reason) from exc
+
     saved = []
     for f in files:
-        ext = Path(f.filename or "").suffix.lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Formato não permitido: {f.filename}. Use: {', '.join(ALLOWED_EXTENSIONS)}",
-            )
-        safe_name = f"{uuid.uuid4().hex}_{Path(f.filename).name}"
-        path = upload_dir / safe_name
         content = await f.read()
+        try:
+            validated = validate_upload(f.filename or "", content, guardrail_log)
+        except GuardrailRejection as exc:
+            raise HTTPException(status_code=400, detail=exc.event.reason) from exc
+
+        path = upload_dir / validated.stored_name
         path.write_bytes(content)
-        saved.append({"original_name": f.filename, "stored_name": safe_name, "path": str(path)})
-    return {"uploaded": saved, "message": f"{len(saved)} arquivo(s) salvo(s) para a sessão. Realize a ingestão da sessão para indexar no RAG."}
+        saved.append(
+            {
+                "original_name": validated.original_name,
+                "stored_name": validated.stored_name,
+                "path": str(path),
+                "size": validated.size,
+                "detected_type": validated.detected_type,
+            }
+        )
+
+    return {
+        "uploaded": saved,
+        "guardrail_events": guardrail_log.as_dicts(),
+        "message": (
+            f"{len(saved)} arquivo(s) salvo(s) para a sessão. "
+            "Realize a ingestão da sessão para indexar no RAG."
+        ),
+    }
 
 
 @app.get("/api/documents/file")
 async def get_document_file(
     name: str,
-    scope: str = METADATA_SOURCE_GLOBAL,
+    scope: str = SCOPE_GLOBAL,
     session_id: Optional[str] = None,
 ):
     """
     Serve um documento indexado para que a evidência do relatório possa linkar
     direto para o PDF de origem (ex.: .../file?name=x.pdf&scope=global#page=12).
     """
-    if scope == METADATA_SOURCE_SESSION:
+    if scope != SCOPE_GLOBAL:
         if not session_id:
             raise HTTPException(status_code=400, detail="session_id é obrigatório para scope=session.")
-        base_dir = (UPLOAD_BASE_DIR / session_id.strip()).resolve()
+        base_dir = UPLOAD_BASE_DIR / session_id.strip()
     else:
         base_dir = PDF_DIR
 
     # Aceita apenas o nome do arquivo e confirma que o caminho resolvido continua
     # dentro do diretório permitido — bloqueia travessia via "../" ou path absoluto.
-    candidate = (base_dir / Path(name).name).resolve()
-    if not candidate.is_file() or base_dir not in candidate.parents:
+    try:
+        candidate = resolve_within(base_dir, name)
+    except GuardrailRejection as exc:
+        raise HTTPException(status_code=404, detail=exc.event.reason) from exc
+
+    if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
-    if candidate.suffix.lower() not in ALLOWED_EXTENSIONS:
+    if candidate.suffix.lower() not in _allowed_extensions():
         raise HTTPException(status_code=400, detail="Formato não permitido.")
 
     media_type = "application/pdf" if candidate.suffix.lower() == ".pdf" else "text/plain"
@@ -294,18 +458,40 @@ async def list_uploaded_documents(session_id: Optional[str] = None):
         return {"files": []}
     files = []
     for p in upload_dir.iterdir():
-        if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS:
+        if p.is_file() and p.suffix.lower() in _allowed_extensions():
             files.append({"name": p.name, "size": p.stat().st_size})
     return {"files": files}
+
+
+async def _run_ingestion(paths: List[str], scope: str, session_id: Optional[str]) -> Dict[str, Any]:
+    """Ingestão + registro dos documentos, compartilhado entre global e sessão."""
+    guardrail_log = GuardrailLog()
+    async with _ingest_lock:
+        result = await run_in_threadpool(
+            rag.ingest_paths, paths, scope, session_id, None, guardrail_log
+        )
+
+    details = [{**detail, "session_id": session_id} for detail in result.get("details", [])]
+    try:
+        await run_in_threadpool(db.save_documents, details)
+    except Exception:
+        # O índice já foi gravado; perder o registro do documento não invalida a
+        # ingestão, mas precisa aparecer no log.
+        logger.exception("Falha ao registrar os documentos ingeridos")
+
+    result["guardrail_events"] = guardrail_log.as_dicts()
+    return result
 
 
 @app.post("/api/documents/ingest-global", dependencies=[Depends(auth.require_admin)])
 async def run_ingest_global():
     """
     Ingestão dos documentos em data/pdf (incluídos pelo administrador).
-    São indexados com source=global e consultados em todas as buscas RAG.
+    São indexados com scope=global e consultados em todas as buscas RAG.
     """
-    paths = [str(p) for p in PDF_DIR.iterdir() if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS]
+    paths = [
+        str(p) for p in PDF_DIR.iterdir() if p.is_file() and p.suffix.lower() in _allowed_extensions()
+    ]
     if not paths:
         return {
             "chunks": 0,
@@ -314,18 +500,17 @@ async def run_ingest_global():
             "details": [],
             "errors": [],
         }
-    async with _ingest_lock:
-        result = await run_in_threadpool(
-            ingest_documents_from_paths, paths, doc_metadata={"source": METADATA_SOURCE_GLOBAL}
-        )
-    return result
+    return await _run_ingestion(paths, SCOPE_GLOBAL, None)
 
 
 @app.post("/api/documents/ingest")
 async def run_ingest_session(session_id: Optional[str] = None):
     """
     Ingestão dos documentos da sessão em data/upload/<session_id>.
-    São indexados com source=session e session_id; consultados apenas quando a sessão está ativa no recommend.
+
+    São indexados com scope=evaluation:<session_id> e consultados apenas quando a
+    sessão está ativa no recommend — o isolamento da §14.2, para que documento de
+    uma avaliação não contamine a base global nem outra avaliação.
     """
     if not session_id:
         return {
@@ -338,13 +523,11 @@ async def run_ingest_session(session_id: Optional[str] = None):
     upload_dir = UPLOAD_BASE_DIR / session_id.strip()
     if not upload_dir.is_dir():
         return {"chunks": 0, "files_processed": 0, "message": "Nenhum arquivo para esta sessão.", "details": [], "errors": []}
-    paths = [str(p) for p in upload_dir.iterdir() if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS]
+    paths = [
+        str(p)
+        for p in upload_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in _allowed_extensions()
+    ]
     if not paths:
         return {"chunks": 0, "files_processed": 0, "message": "Nenhum arquivo no diretório da sessão.", "details": [], "errors": []}
-    async with _ingest_lock:
-        result = await run_in_threadpool(
-            ingest_documents_from_paths,
-            paths,
-            doc_metadata={"source": METADATA_SOURCE_SESSION, "session_id": session_id.strip()},
-        )
-    return result
+    return await _run_ingestion(paths, evaluation_scope(session_id.strip()), session_id.strip())

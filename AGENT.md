@@ -131,6 +131,138 @@ resultados, em dois campos:
 Para fornecer evidências que sustentem as recomendações, o agente utiliza um sistema de Geração com Recuperação de Contexto (Retrieval-Augmented Generation – RAG).
 O sistema RAG consulta um repositório vetorial de documentos para encontrar informações relevantes sobre o desempenho de cada provedor em relação aos diferentes critérios.
 
+Cada trecho indexado carrega identidade própria e proveniência (`chunk_id`,
+`document_id`, `content_hash`, `source_name`, `page`, `year`, `scope`,
+`ingested_at`). Os identificadores são **determinísticos**, derivados do
+conteúdo: reingerir o mesmo arquivo devolve os mesmos ids, e uma evidência
+gravada continua apontando para o mesmo trecho depois de o índice ser
+reconstruído. Campo sem informação disponível fica nulo, nunca preenchido por
+suposição.
+
+## Organização dos módulos do backend
+
+A Fase 0 da diretriz reorganizou o backend em pacotes por responsabilidade
+(diretriz §38). O `llm_utils.py`, que concentrava LLM, embeddings, RAG e
+ingestão, deixou de existir.
+
+| Pacote | Responsabilidade | Diretriz |
+| --- | --- | --- |
+| `config/` | única leitura de `os.environ`; limites, versões e escolha de provedor | §23.2, §28.3, §35 |
+| `domain/` | motor determinístico: indicadores, pesos, normalização, pontuação | §5–§13 |
+| `llm/` | adaptador multi-provedor, prompts versionados, saída validada por schema | §25, §28.2, §35 |
+| `guardrails/` | arquivos, credenciais, injeção, limites, encapsulamento, eventos | §22–§25 |
+| `rag/` | índice FAISS, ingestão com metadados completos, recuperação | §13–§16 |
+| `audit/` | versionamento do questionário, do algoritmo e dos prompts | §27–§28 |
+| `preferences.py` | costura questionário → guardrails → prompt → saída validada | — |
+
+**Nenhum módulo fora de `llm/providers.py` pergunta qual é o provedor.** A camada
+de domínio recebe um `LLMClient` pronto — condição para que trocar de modelo não
+altere regra nenhuma (§28) e para que o Ollama local seja caminho de primeira
+classe (§35.2).
+
+### Guardrails (multicamada, sem biblioteca externa)
+
+A §22.1 é explícita: guardrail não é uma biblioteca, e a aplicação não deve
+depender de uma para garantir as regras metodológicas centrais.
+
+| Camada | O que faz |
+| --- | --- |
+| `guardrails/files.py` | extensão, **assinatura real do conteúdo**, tamanho, nome saneado, caminho controlado |
+| `guardrails/secrets.py` | credenciais em texto e documento; ação `MASK`/`REJECT`/`WARN` por `.env` |
+| `guardrails/injection.py` | heurísticas de prompt injection — registram, não bloqueiam |
+| `guardrails/text.py` | limite de tamanho e encapsulamento em `<USER_CONTEXT>` / `<DOCUMENT_CONTEXT>` |
+| `llm/client.py` | JSON → Pydantic → aceitar ou rejeitar, com um retry controlado |
+
+Duas decisões que explicam o desenho:
+
+- **A validação de arquivo olha o conteúdo, não a extensão.** Antes bastava
+  terminar em `.pdf`; um executável renomeado passava.
+- **A injeção é contida pelo encapsulamento, não pela detecção.** As heurísticas
+  só registram (`WARN`), porque bloquear por palavra-chave recusaria respostas
+  legítimas sem tornar o sistema mais seguro. O que protege é a marcação — e ela
+  só vale porque o conteúdo não consegue fechá-la de dentro.
+
+### Camada de indicadores (§5.1, §7 e §39)
+
+Há um indicador para cada pergunta fechada dos blocos A, B e C — mapeamento 1:1,
+declarado em `backend/methodology/indicators.json` e ligado ao questionário pelo
+`question_id`. As escalas (coeficientes de relevância, rubricas, método do AHP,
+desempate) ficam em `backend/methodology/scales.json`. Os dois são **volumes
+editáveis** e entram no hash de versão de cada avaliação.
+
+```text
+Resposta de relevância (A/B/C)          Comparação par a par (D)
+        ↓                                        ↓
+coeficiente de relevância                  matriz de Saaty
+        ↓                                        ↓
+l_j = v_j / Σ v_k   (na dimensão)      W_d  (peso da dimensão)
+        └──────────────┬─────────────────────────┘
+                       ↓
+              w_j = W_d × l_j      (peso global do indicador)
+```
+
+Os três níveis são persistidos separadamente em `indicator_weights` (§7: nunca
+sobrescrever um nível com outro). Guardar só o peso global tornaria impossível
+responder *por que* ele é o que é.
+
+**Escala de relevância (TODO ACADÊMICO 01, decidido: `irrelevante` = 1).**
+
+| Resposta | Coeficiente |
+| --- | --- |
+| Decisivo | 5 |
+| Muito relevante | 4 |
+| Relevante | 3 |
+| Pouco relevante | 2 |
+| Irrelevante | 1 |
+| (sem resposta / "não sei") | `null` |
+
+**A regra que mais importa aqui é sobre a ausência.** Indicador sem coeficiente
+válido — pergunta não respondida ou "não sei" — fica com peso `None`, **não** `0`.
+Zero afirmaria "este indicador não importa", que é precisamente o que não se sabe.
+Com a escala em vigor, `1` é uma resposta ("importa pouco") e `null` é a ausência
+dela; o código não colapsa as duas.
+
+Dimensão sem nenhum coeficiente válido não cai em pesos iguais: entra em
+`dimensions_needing_review` e vira limitação declarada. O fallback silencioso é o
+erro mais fácil de cometer aqui porque não parece erro — produz um resultado de
+aparência normal sobre um julgamento que o gestor nunca deu.
+
+### Método do AHP
+
+A §6.3 descreve o procedimento da dissertação: somar cada coluna, dividir cada
+elemento pela soma da sua coluna, tirar a média aritmética de cada linha. É o
+padrão (`column_mean`) e é o que reproduz a fixture obrigatória da §6.5.
+
+O método das potências (`eigenvector`), usado até a Fase 1, continua disponível
+por configuração. **Os dois não são intercambiáveis**: para a matriz de
+referência da §6.5 eles divergem em ~0,007 no primeiro peso — pequeno, mas acima
+de erro de ponto flutuante. Por isso o método escolhido é gravado em cada
+avaliação. A matriz normalizada também é persistida (§32.2): é o passo que
+permite refazer a conta dos pesos à mão.
+
+### O que ainda não tem fonte
+
+O motor de desempenho por indicador — normalização benefício/minimização,
+conjunto comparável `V`, renormalização e agregação — está implementado e
+testado, mas **não tem de onde tirar valores**: a extração de evidência é a Fase
+2. Até lá o ranking continua saindo da síntese por dimensão, e a resposta declara
+isso em `indicator_weights.performance_source`. Nenhum valor por indicador é
+inventado para preencher a lacuna.
+
+### Versionamento (§28)
+
+Cada avaliação grava com que **questionário** (`questions_hash` + versão),
+**algoritmo** (`SCORING_ALGORITHM_VERSION`), **prompts** (`prompt_id` +
+`prompt_version`) e **modelos** (LLM e embedding) foi produzida. O hash é
+calculado sobre a forma canônica do `questions.json`: reindentar o arquivo não o
+muda, alterar um enunciado sim. O backend lê o arquivo por um volume somente
+leitura (`QUESTIONS_JSON_PATH`), porque ele é editável em tempo de execução.
+
+Se o `questions.json` não puder ser lido, a avaliação **não é recusada**: o hash
+volta nulo, o motivo fica registrado e a avaliação é marcada como
+`COMPLETED_WITH_LIMITATIONS`. Perder a rastreabilidade da versão é ruim; recusar
+a avaliação inteira por causa de um volume não montado seria pior.
+
 ### 5. Persistência para auditoria
 
 Cada envio do questionário é gravado em um banco **SQLite** em
@@ -139,12 +271,27 @@ banco sobrevive a rebuild de imagem). O caminho é configurável por
 `AUDIT_DB_PATH`; o acesso é feito por SQLAlchemy, de modo que migrar para
 PostgreSQL depois é trocar a URL de conexão.
 
-| Tabela | Conteúdo | DIRETRIZ (seção 23) |
+| Tabela | Conteúdo | Diretriz (§32.1) |
 | --- | --- | --- |
-| `submissions` | respondente, pesos, λmax, IC, RC, provedor vencedor, justificativa, modelo de LLM usado, e os payloads íntegros de entrada e saída | QUESTIONNAIRES + ANALYSIS_SESSIONS + AHP_RESULTS |
-| `submission_answers` | uma linha por pergunta, com o **enunciado como estava no envio** | QUESTIONNAIRE_RESPONSES |
-| `ahp_judgments` | as comparações par-a-par do bloco D, com a alternativa escolhida e a razão | AHP_COMPARISONS |
-| `submission_rankings` | posição, score e contribuição por critério de cada provedor | — |
+| `submissions` | respondente, pesos, λmax, IC, RC, provedor vencedor, justificativa, versões (questionário, algoritmo, LLM, embedding), estado, e os payloads íntegros de entrada e saída | Evaluation + AhpResult |
+| `submission_answers` | uma linha por pergunta, com o **enunciado como estava no envio** | QuestionnaireResponse |
+| `ahp_judgments` | as comparações par-a-par do bloco D, com a alternativa escolhida e a razão | PairwiseJudgment |
+| `submission_rankings` | posição, score e contribuição por critério de cada provedor | RankingResult |
+| `llm_runs` | uma linha por chamada à LLM: prompt + versão, provedor, modelo, status, latência, tokens, hash de entrada e saída | LLMRun |
+| `guardrail_events` | regra, etapa, ação, motivo e amostra **já mascarada** | GuardrailEvent |
+| `rag_queries` + `retrieved_chunks` | consulta executada e os trechos devolvidos, com score e fonte | — |
+| `documents` | documentos ingeridos, com provedor, ano, escopo e modelo de embedding | Document |
+| `indicator_weights` | coeficiente de relevância, peso local, peso da dimensão e peso global de cada indicador | IndicatorWeight |
+
+`DocumentChunk` da §32.1 **não** foi criada: o índice FAISS já guarda os chunks e
+os identificadores são determinísticos. Uma tabela espelho que ninguém escreve
+seria pior que a ausência dela.
+
+**Migração.** `init_db()` roda `create_all` e depois um passo aditivo que
+acrescenta colunas novas a tabelas que já existiam — `create_all` cria tabelas,
+mas não altera as existentes. Só `ADD COLUMN`: nada é removido nem reescrito, e
+os envios anteriores continuam legíveis com os campos novos em nulo. Nulo ali
+significa "gravado antes de o campo existir", não "falhou".
 
 Duas camadas de fidelidade convivem de propósito: colunas normalizadas (o que o
 dashboard agrega sem abrir JSON) e `request_json`/`response_json` (o payload
@@ -198,23 +345,35 @@ autenticação: antes a senha era comparada **no bundle do navegador** e o endpo
 
 ## Testes
 
-Os testes cobrem o caminho determinístico do bloco D — conversão para Saaty,
-recíprocos, validação, propriedades da matriz e compatibilidade com os envios no
-formato antigo. Ficam em `backend/tests/` e não tocam banco, rede nem LLM.
+Os testes ficam em `backend/tests/` e **não tocam rede, LLM nem índice
+construído** — o modelo e o RAG são substituídos por duplos. O banco usado é
+sempre temporário (`tmp_path`).
 
 ```bash
-docker run --rm -v "$PWD/backend:/src" -w /src ufscar-cloud-selector-backend \
-  sh -c "pip install -q pytest && python -m pytest tests -q"
+make test
 ```
 
-Localmente, com as dependências instaladas (`requirements-dev.txt`):
-`pytest backend/tests`.
+Ou diretamente, sem subir o compose:
+
+```bash
+docker run --rm -v "$PWD/backend:/app" -w /app ufscar-cloud-selector-backend python -m pytest tests -q
+```
 
 | Arquivo | Cobre |
 | --- | --- |
 | `test_pairwise.py` | escala 3/5/7/9, indiferença = 1, recíprocos, regras de validação, frase legível, leitura do formato antigo |
 | `test_questionnaire_pairwise.py` | payload da API → julgamentos, recusa de comparação incompleta/incoerente, separação entre blocos, payload de auditoria |
 | `test_ahp_matrix.py` | reciprocidade e diagonal unitária, autovetor (A·w = λmax·w), RC dentro e fora do limite, determinismo, equivalência entre formato novo e antigo |
+| `test_guardrails_files.py` | extensão, executável renomeado, MIME divergente, tamanho, nome saneado, symlink para fora, quota |
+| `test_guardrails_text.py` | credenciais (detecção, mascaramento, modos), os 4 casos adversariais da §42.5, limite de texto, encapsulamento à prova de fechamento |
+| `test_llm_contract.py` | prompt versionado, recorte de JSON, retry único, `LLM_OUTPUT_INVALID`, provedor indisponível, registro de execução |
+| `test_versioning.py` | hash canônico do questionário, insensível a formatação e sensível a conteúdo, ausência do arquivo |
+| `test_rag_metadata.py` | ids determinísticos, ano lido do nome, página em base 0 vs humana, isolamento de escopo |
+| `test_db_migration.py` | esquema antigo → migração aditiva, envios preservados, blocos de auditoria novos |
+| `test_ahp_reference.py` | **fixture obrigatória da §6.5** (1/5/7/3 → 0.724/0.193/0.083, λmax 3.066, CI 0.033, CR 0.057), divergência entre métodos, matriz circular |
+| `test_domain_weights.py` | coeficientes, "não sei" ≠ 0, somas locais/globais = 1, dimensão sem resposta pede revisão, mudança de escala por config, validação da configuração |
+| `test_domain_normalization.py` | benefício e minimização, divisão indefinida, rubrica, conjunto `V` comum, `NOT_FOUND` ≠ 0, renormalização, contribuições, empate |
+| `test_recommend_pipeline.py` | integração do endpoint: guardrails no fluxo, pesos de indicador, versões, estado, limitações, gravação da auditoria |
 
 ## API Endpoint
 

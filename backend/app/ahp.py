@@ -72,11 +72,33 @@ def judgments_to_pairwise_matrix(
     return keys, matrix, missing
 
 
-def priority_vector(matrix: np.ndarray, max_iter: int = 500, tol: float = 1e-12):
+def normalized_matrix(matrix: np.ndarray) -> np.ndarray:
     """
-    Autovetor principal pelo método das potências, normalizado para somar 1,
-    mais λmax, o índice (CI) e a razão de consistência (CR).
+    Matriz normalizada pela soma de cada coluna (§6.3):
+
+        N_ij = A_ij / Σ_i(A_ij)
+
+    Coluna de soma zero não acontece numa matriz recíproca válida (todos os
+    elementos são positivos), mas a guarda existe para que uma matriz malformada
+    produza zeros em vez de NaN silencioso.
     """
+    totals = matrix.sum(axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.divide(
+            matrix, totals, out=np.zeros_like(matrix, dtype=float), where=totals != 0
+        )
+
+
+def _weights_by_column_mean(matrix: np.ndarray) -> np.ndarray:
+    """
+    Procedimento da dissertação (§6.3): normalizar por coluna e tirar a média
+    aritmética de cada linha da matriz normalizada.
+    """
+    return normalized_matrix(matrix).mean(axis=1)
+
+
+def _weights_by_power_method(matrix: np.ndarray, max_iter: int = 500, tol: float = 1e-12) -> np.ndarray:
+    """Autovetor principal pelo método das potências, normalizado para somar 1."""
     n = matrix.shape[0]
     w = np.ones(n, dtype=float) / n
 
@@ -90,6 +112,42 @@ def priority_vector(matrix: np.ndarray, max_iter: int = 500, tol: float = 1e-12)
             w = w_next
             break
         w = w_next
+    return w
+
+
+def priority_vector(
+    matrix: np.ndarray,
+    method: str = "column_mean",
+    random_index_table: Dict[int, float] | None = None,
+):
+    """
+    Vetor de prioridades, mais λmax, o índice (CI) e a razão de consistência (CR).
+
+    **`column_mean` é o padrão porque é o procedimento descrito na §6.3** — somar
+    cada coluna, dividir cada elemento pela soma da sua coluna e tirar a média
+    aritmética de cada linha. É também o método que reproduz os valores esperados
+    no teste obrigatório da §6.5.
+
+    `eigenvector` (método das potências) continua disponível e era o que o código
+    usava antes da Fase 1. Para a matriz de referência da §6.5 os dois divergem em
+    ~0,007 no primeiro peso: pouco, mas acima de erro de ponto flutuante — não é
+    uma escolha indiferente, e por isso ela é explícita e configurável.
+
+    O cálculo de consistência é idêntico nos dois casos e sempre usa a matriz
+    original: λmax = média de (A·w)_i / w_i.
+    """
+    n = matrix.shape[0]
+
+    if method == "eigenvector":
+        w = _weights_by_power_method(matrix)
+    elif method == "column_mean":
+        w = _weights_by_column_mean(matrix)
+    else:
+        raise ValueError(f"Método de ponderação AHP desconhecido: {method!r}.")
+
+    total = w.sum()
+    if total > 0:
+        w = w / total
 
     # λmax = média de (A·w)_i / w_i
     aw = matrix @ w
@@ -98,7 +156,8 @@ def priority_vector(matrix: np.ndarray, max_iter: int = 500, tol: float = 1e-12)
     lambda_max = float(ratios[w != 0].mean()) if np.any(w != 0) else float(n)
 
     consistency_index = (lambda_max - n) / (n - 1) if n > 1 else 0.0
-    random_index = SAATY_RANDOM_INDEX.get(n, 1.49)
+    table = random_index_table or SAATY_RANDOM_INDEX
+    random_index = table.get(n, 1.49)
     consistency_ratio = (consistency_index / random_index) if random_index > 0 else 0.0
 
     return w, lambda_max, consistency_index, consistency_ratio
@@ -107,18 +166,42 @@ def priority_vector(matrix: np.ndarray, max_iter: int = 500, tol: float = 1e-12)
 def derive_criteria_weights(
     judgments: Dict[str, Dict[str, Any]],
     criteria: Sequence[str],
+    method: str | None = None,
+    consistency_threshold: float | None = None,
+    random_index_table: Dict[int, float] | None = None,
 ) -> Dict[str, object]:
     """
-    Pipeline completo do AHP para os critérios: julgamentos par a par → matriz →
-    autovetor → pesos + diagnóstico de consistência.
+    Pipeline completo do AHP para as dimensões: julgamentos par a par → matriz →
+    vetor de prioridades → pesos + diagnóstico de consistência.
+
+    O método e o limite de consistência vêm da configuração metodológica quando
+    não são informados — são decisão da dissertação, não do código.
     """
+    if method is None or consistency_threshold is None or random_index_table is None:
+        # Import local: `ahp` é domínio puro e não deve exigir a configuração
+        # carregada para ser usado (os testes chamam com os parâmetros diretos).
+        from domain.methodology import get_methodology
+
+        methodology = get_methodology()
+        method = method or methodology.ahp_weight_method
+        if consistency_threshold is None:
+            consistency_threshold = methodology.ahp_consistency_threshold
+        random_index_table = random_index_table or dict(methodology.ahp_random_index)
+
     keys, matrix, missing = judgments_to_pairwise_matrix(judgments, criteria)
-    weights, lambda_max, ci, cr = priority_vector(matrix)
+    weights, lambda_max, ci, cr = priority_vector(
+        matrix, method=method, random_index_table=random_index_table
+    )
+    normalized = normalized_matrix(matrix)
 
     return {
         "weights": {k: float(w) for k, w in zip(keys, weights)},
         "criteria_order": keys,
+        "weight_method": method,
         "pairwise_matrix": [[round(float(v), 4) for v in row] for row in matrix],
+        # §32.2 exige a matriz normalizada persistida junto da original: é o passo
+        # intermediário que permite refazer a conta dos pesos à mão.
+        "normalized_matrix": [[round(float(v), 6) for v in row] for row in normalized],
         # Além da razão, o julgamento como o gestor o informou (dimensão
         # priorizada + intensidade verbal) e a frase legível equivalente: a
         # memória de cálculo mostra a resposta, não só o número derivado dela.
@@ -136,9 +219,10 @@ def derive_criteria_weights(
         "missing_judgments": missing,
         "lambda_max": round(float(lambda_max), 4),
         "consistency_index": round(float(ci), 4),
+        "random_index": random_index_table.get(len(keys)),
         "consistency_ratio": round(float(cr), 4),
-        "is_consistent": bool(cr <= CONSISTENCY_THRESHOLD),
-        "consistency_threshold": CONSISTENCY_THRESHOLD,
+        "is_consistent": bool(cr <= consistency_threshold),
+        "consistency_threshold": consistency_threshold,
     }
 
 

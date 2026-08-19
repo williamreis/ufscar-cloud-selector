@@ -153,6 +153,15 @@ class QuestionnaireResponse(BaseModel):
         return v
 
     # -- Perguntas de relevância (A, B, C) -----------------------------------
+    def answers_by_question(self) -> Dict[str, Optional[str]]:
+        """
+        Mapa `question_id` → alternativa escolhida.
+
+        É a entrada do cálculo de pesos locais dos indicadores (`domain.weights`),
+        que a partir da Fase 1 é o destino metodológico dos blocos A/B/C.
+        """
+        return {ans.question_id: ans.choice for ans in self.answers if ans.choice}
+
     def relevance_by_criterion(self) -> Dict[str, float]:
         """
         Média 1-5 por dimensão a partir das perguntas de relevância.
@@ -290,10 +299,22 @@ class RecommendationResponse(BaseModel):
     ahp: Optional[Dict[str, Any]] = None
     # Memória de cálculo da síntese: nota → normalizada → contribuição → score final
     synthesis: Optional[Dict[str, Any]] = None
+    # Pesos dos indicadores nos três níveis (§7): coeficiente de relevância,
+    # peso local, peso da dimensão e peso global.
+    indicator_weights: Optional[Dict[str, Any]] = None
     # Respostas fora do cálculo numérico (ainda enviadas ao LLM como contexto)
     unscored_answers: Optional[List[str]] = None
     # Cobertura documental e procedência das notas dos provedores
     coverage: Optional[Dict[str, Any]] = None
+    # Versões em vigor na execução (§28): questionário + hash, algoritmo, prompts,
+    # provedor/modelo de LLM e de embedding.
+    versions: Optional[Dict[str, Any]] = None
+    # COMPLETED ou COMPLETED_WITH_LIMITATIONS (§26)
+    status: Optional[str] = None
+    # Limitações registradas (§30). Informam, não penalizam a pontuação.
+    limitations: Optional[List[str]] = None
+    # Guardrails disparados no processamento deste envio (§27)
+    guardrail_events: Optional[List[Dict[str, Any]]] = None
     # Id do registro de auditoria (também é o trace_id). Nulo = a gravação falhou
     # e este envio não ficou registrado no banco.
     submission_id: Optional[str] = None

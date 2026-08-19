@@ -127,18 +127,75 @@ def test_julgamentos_circulares_estouram_o_limite():
     assert result["is_consistent"] is False
 
 
-def test_pesos_sao_o_autovetor_principal_da_matriz():
-    """A·w = λmax·w — verifica que os pesos vêm mesmo do autovetor, não de uma média."""
+def test_pesos_seguem_o_procedimento_da_dissertacao():
+    """
+    §6.3: somar cada coluna, dividir cada elemento pela soma da sua coluna e
+    tirar a média aritmética de cada linha da matriz normalizada.
+
+    Este é o método em vigor (`column_mean`). Antes da Fase 1 o código usava o
+    autovetor pelo método das potências, que dá um resultado próximo mas não
+    igual — ver `test_metodos_de_ponderacao_divergem_de_forma_visivel`.
+    """
+    judgments = judgments_from(
+        comparison("c1", "sustainability", "performance", "performance", "moderate"),
+        comparison("c2", "sustainability", "security", "security", "strong"),
+        comparison("c3", "performance", "security", "security", "moderate"),
+    )
+    result = derive_criteria_weights(judgments, CRITERIA, method="column_mean")
+    keys, matrix, _ = judgments_to_pairwise_matrix(judgments, CRITERIA)
+
+    esperado = (matrix / matrix.sum(axis=0)).mean(axis=1)
+    obtido = np.array([result["weights"][k] for k in keys])
+    assert np.allclose(obtido, esperado, atol=1e-9)
+
+
+def test_matriz_normalizada_e_persistida_com_colunas_somando_1():
+    """§32.2: a matriz normalizada é o passo intermediário que permite refazer a conta."""
     judgments = judgments_from(
         comparison("c1", "sustainability", "performance", "performance", "moderate"),
         comparison("c2", "sustainability", "security", "security", "strong"),
         comparison("c3", "performance", "security", "security", "moderate"),
     )
     result = derive_criteria_weights(judgments, CRITERIA)
+
+    normalizada = np.array(result["normalized_matrix"])
+    assert np.allclose(normalizada.sum(axis=0), 1.0, atol=1e-5)
+    # E os pesos são exatamente a média das linhas dessa matriz.
+    keys = result["criteria_order"]
+    obtido = np.array([result["weights"][k] for k in keys])
+    assert np.allclose(obtido, normalizada.mean(axis=1), atol=1e-5)
+
+
+def test_autovetor_continua_disponivel_e_satisfaz_a_definicao():
+    """Com `eigenvector`, vale A·w = λmax·w — a propriedade que define o autovetor."""
+    judgments = judgments_from(
+        comparison("c1", "sustainability", "performance", "performance", "moderate"),
+        comparison("c2", "sustainability", "security", "security", "strong"),
+        comparison("c3", "performance", "security", "security", "moderate"),
+    )
+    result = derive_criteria_weights(judgments, CRITERIA, method="eigenvector")
     keys, matrix, _ = judgments_to_pairwise_matrix(judgments, CRITERIA)
 
     w = np.array([result["weights"][k] for k in keys])
     assert np.allclose(matrix @ w, result["lambda_max"] * w, atol=1e-6)
+
+
+def test_metodos_de_ponderacao_divergem_de_forma_visivel():
+    """
+    A escolha do método não é indiferente: para julgamentos fortes a diferença
+    passa de 0,005, acima de erro de ponto flutuante. É por isso que o método é
+    explícito na configuração e gravado em cada avaliação.
+    """
+    judgments = judgments_from(
+        comparison("c1", "sustainability", "performance", "performance", "very_strong"),
+        comparison("c2", "sustainability", "security", "security", "extreme"),
+        comparison("c3", "performance", "security", "security", "moderate"),
+    )
+    por_coluna = derive_criteria_weights(judgments, CRITERIA, method="column_mean")["weights"]
+    por_autovetor = derive_criteria_weights(judgments, CRITERIA, method="eigenvector")["weights"]
+
+    maior_diferenca = max(abs(por_coluna[k] - por_autovetor[k]) for k in por_coluna)
+    assert maior_diferenca > 0.005
 
 
 def test_mesma_resposta_produz_sempre_os_mesmos_pesos():

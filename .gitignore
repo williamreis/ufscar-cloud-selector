@@ -5,6 +5,11 @@
 *.db
 *.db-*
 
+# Bytecode do Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Índice vetorial FAISS (dados derivados, gerados via /api/documents/ingest*)
 backend/data/faiss_index/*
 !backend/data/faiss_index/.gitkeep

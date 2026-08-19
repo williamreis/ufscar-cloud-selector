@@ -30,6 +30,5 @@ sentence-transformers>=3.0
 pypdf>=4.2
 requests>=2.32
 
-# Frontend (Streamlit)
-streamlit>=1.37
-plotly>=5.22
+# Testes (diretriz §42 exige suíte em pytest)
+pytest>=8.0

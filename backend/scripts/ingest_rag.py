@@ -1,72 +1,93 @@
+"""
+Ingestão dos documentos globais pela linha de comando (`make ingest`).
+
+Faz exatamente o que o endpoint `/api/documents/ingest-global` faz, pelo mesmo
+caminho de código: validação de arquivo, chunking, metadados completos (§14.3) e
+gravação no índice FAISS, mais o registro dos documentos no banco de auditoria.
+
+A versão anterior deste script montava o índice por conta própria, com
+`OpenAIEmbeddings` fixo e sem metadado nenhum. Depois da Fase 0 isso passou a ser
+ativamente nocivo: os trechos gravados por aqui entrariam no mesmo índice **sem
+`chunk_id`**, e portanto sem como sustentar a proveniência que a §19 exige.
+
+Uso:
+
+    python scripts/ingest_rag.py                 # tudo que estiver em data/pdf
+    python scripts/ingest_rag.py a.pdf b.txt     # apenas os arquivos indicados
+"""
+
 import os
-from dotenv import load_dotenv
-from langchain_openai import OpenAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
+import sys
+from pathlib import Path
 
-# Carregar variáveis de ambiente
-load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", "./data/faiss_index")
-VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "providers_docs")
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 1000))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 200))
+# Os módulos da aplicação se importam de forma plana (`from config import ...`),
+# porque o uvicorn roda com working_dir em backend/app. Reproduzimos esse sys.path
+# em vez de reescrever os imports da aplicação.
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
-
-def ingest_pdfs(pdf_paths):
-    """Carrega e divide PDFs em chunks e indexa no FAISS."""
-    embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
-    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-
-    docs_total = []
-    for path in pdf_paths:
-        loader = PyPDFLoader(path)
-        docs = loader.load()
-        chunks = splitter.split_documents(docs)
-        print(f"[PDF] {path}: {len(chunks)} chunks gerados.")
-        docs_total.extend(chunks)
-
-    db = FAISS.from_documents(documents=docs_total, embedding=embeddings)
-    db.save_local(VECTOR_DB_PATH)
-    print(f"✅ Indexação concluída com {len(docs_total)} chunks.")
-    return db
+import db  # noqa: E402
+import rag  # noqa: E402
+from config import get_settings  # noqa: E402
+from guardrails import GuardrailLog  # noqa: E402
+from rag.metadata import SCOPE_GLOBAL  # noqa: E402
 
 
-def ingest_webpages(urls):
-    """Carrega e indexa conteúdos web."""
-    embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
-    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+def collect_paths(argv: list) -> list:
+    settings = get_settings()
+    if argv:
+        return [str(Path(a).resolve()) for a in argv]
 
-    docs_total = []
-    for url in urls:
-        loader = WebBaseLoader(url)
-        docs = loader.load()
-        chunks = splitter.split_documents(docs)
-        print(f"[WEB] {url}: {len(chunks)} chunks gerados.")
-        docs_total.extend(chunks)
+    pdf_dir = Path(os.getenv("PDF_DIR", APP_DIR.parent / "data" / "pdf")).resolve()
+    if not pdf_dir.is_dir():
+        return []
+    return [
+        str(p)
+        for p in sorted(pdf_dir.iterdir())
+        if p.is_file() and p.suffix.lower() in settings.allowed_upload_extensions
+    ]
 
-    db = FAISS.from_documents(documents=docs_total, embedding=embeddings)
-    db.save_local(VECTOR_DB_PATH)
-    print(f"✅ Indexação concluída com {len(docs_total)} chunks.")
-    return db
+
+def main(argv: list) -> int:
+    settings = get_settings()
+    paths = collect_paths(argv)
+    if not paths:
+        print("Nenhum arquivo para ingerir. Coloque PDFs ou TXTs em data/pdf.")
+        return 1
+
+    print(f"Embeddings: {settings.embedding_provider}/{settings.embedding_model}")
+    print(f"{len(paths)} arquivo(s) a processar.\n")
+
+    guardrail_log = GuardrailLog()
+    result = rag.ingest_paths(paths, scope=SCOPE_GLOBAL, guardrail_log=guardrail_log)
+
+    for detail in result["details"]:
+        provider = detail["provider"] or "— sem provedor identificado no nome —"
+        year = detail["year"] or "sem ano"
+        print(f"  {detail['file_name']}: {detail['chunks']} chunks · {provider} · {year}")
+
+    db.init_db()
+    registered = db.save_documents(result["details"])
+
+    print(f"\n{result['chunks']} chunks indexados · {registered} documento(s) registrado(s).")
+
+    if result["unassigned_files"]:
+        print(
+            "\nSem provedor identificável no nome (serão indexados, mas não viram "
+            "evidência de ninguém):"
+        )
+        for name in result["unassigned_files"]:
+            print(f"  - {name}")
+
+    for event in guardrail_log.events:
+        print(f"\n[guardrail] {event.rule_id} ({event.action}) em {event.target}: {event.reason}")
+
+    for error in result["errors"]:
+        print(f"\n[erro] {error}")
+
+    return 0 if result["chunks"] else 1
 
 
 if __name__ == "__main__":
-    # Exemplo de ingestão combinada
-    pdfs = [
-        "./data/pdf/2023-amazon-sustainability-report-aws-summary.pdf",
-        "./data/pdf/2025-azure-environmental-sustainability-report.pdf",
-        "./data/pdf/2023-google-environmental-report.pdf"
-    ]
-
-    urls = [
-        "https://aws.amazon.com/pt/sustainability/",
-        "https://sustainability.google/solutions/cloud/",
-        "https://azure.microsoft.com/en-us/global-infrastructure/sustainability"
-    ]
-
-    print("🔄 Iniciando ingestão de PDFs e páginas web...")
-    db_pdf = ingest_pdfs(pdfs)
-    # db_web = ingest_webpages(urls)
-    print("🏁 Processo concluído.")
+    raise SystemExit(main(sys.argv[1:]))
