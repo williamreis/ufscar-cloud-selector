@@ -17,11 +17,21 @@ Duas camadas de fidelidade convivem de propósito:
 O arquivo fica em backend/data/, que já é volume persistente no docker-compose,
 então o banco sobrevive a rebuild de imagem.
 
-Mapeamento com as tabelas previstas na DIRETRIZ (seção 23): `submissions` cobre
-QUESTIONNAIRES + ANALYSIS_SESSIONS + AHP_RESULTS, `submission_answers` cobre
-QUESTIONNAIRE_RESPONSES e `ahp_judgments` cobre AHP_COMPARISONS. As tabelas de
-RAG/documentos/guardrails não entram aqui — o índice FAISS continua sendo a
-fonte desses dados.
+Mapeamento com as entidades previstas na diretriz (§32.1): `submissions` cobre
+Evaluation + AhpResult, `submission_answers` cobre QuestionnaireResponse e
+`ahp_judgments` cobre PairwiseJudgment. A partir da Fase 0 entram também
+`documents` (§14.3), `rag_queries` + `retrieved_chunks`, `llm_runs` e
+`guardrail_events` — os três blocos de auditoria que a §27 exige e que antes não
+tinham onde ficar.
+
+`DocumentChunk` da §32.1 **não** foi criada: o índice FAISS já guarda os chunks, e
+os identificadores (`chunk_id`, `document_id`) são determinísticos, derivados do
+conteúdo. Uma tabela espelho que ninguém escreve seria pior que a ausência dela.
+As evidências da Fase 1 referenciam o `chunk_id` diretamente.
+
+Migração: `init_db()` roda `create_all` e, em seguida, um passo aditivo que
+acrescenta colunas novas a tabelas que já existiam. É o suficiente para SQLite e
+preserva os envios já gravados; nenhuma coluna é removida ou reescrita.
 """
 
 import json
@@ -43,6 +53,7 @@ from sqlalchemy import (
     create_engine,
     event,
     func,
+    inspect,
     select,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -135,6 +146,19 @@ class Submission(Base):
     llm_notes: Mapped[Optional[str]] = mapped_column(Text)
     llm_provider: Mapped[Optional[str]] = mapped_column(String(40))
     llm_model: Mapped[Optional[str]] = mapped_column(String(120))
+    embedding_provider: Mapped[Optional[str]] = mapped_column(String(40))
+    embedding_model: Mapped[Optional[str]] = mapped_column(String(120))
+
+    # Versionamento (§28): sem isto, um resultado gravado deixa de ser
+    # interpretável assim que o questionário ou a regra de pontuação mudar.
+    questionnaire_version: Mapped[Optional[str]] = mapped_column(String(40))
+    questions_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    algorithm_version: Mapped[Optional[str]] = mapped_column(String(40))
+
+    # Estado da avaliação (§26). Envios gravados antes desta coluna ficam nulos —
+    # e nulo aqui significa "gerado antes de existir máquina de estados", não
+    # "estado desconhecido por falha".
+    status: Mapped[Optional[str]] = mapped_column(String(40), index=True)
 
     request_json: Mapped[str] = mapped_column(Text)
     response_json: Mapped[str] = mapped_column(Text)
@@ -147,6 +171,18 @@ class Submission(Base):
     )
     rankings: Mapped[List["SubmissionRanking"]] = relationship(
         back_populates="submission", cascade="all, delete-orphan", order_by="SubmissionRanking.rank"
+    )
+    llm_runs: Mapped[List["LLMRun"]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan"
+    )
+    guardrail_events: Mapped[List["GuardrailEventRecord"]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan"
+    )
+    rag_queries: Mapped[List["RagQuery"]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan"
+    )
+    indicator_weights: Mapped[List["IndicatorWeightRecord"]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan"
     )
 
 
@@ -207,8 +243,213 @@ class SubmissionRanking(Base):
     submission: Mapped[Submission] = relationship(back_populates="rankings")
 
 
+class LLMRun(Base):
+    """
+    Uma chamada à LLM (§27, bloco "LLM").
+
+    Guarda o hash da entrada e da saída, não o texto: o conteúdo íntegro já está
+    em `response_json`, e duplicá-lo aqui multiplicaria o banco sem acrescentar
+    rastreabilidade. O hash é o que permite provar que o registro corresponde ao
+    que foi enviado e recebido.
+    """
+
+    __tablename__ = "llm_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    submission_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
+
+    prompt_id: Mapped[str] = mapped_column(String(80), index=True)
+    prompt_version: Mapped[str] = mapped_column(String(20))
+    provider: Mapped[Optional[str]] = mapped_column(String(40))
+    model: Mapped[Optional[str]] = mapped_column(String(120))
+
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    latency_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    attempts: Mapped[Optional[int]] = mapped_column(Integer)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer)
+
+    input_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    output_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    error: Mapped[Optional[str]] = mapped_column(Text)
+
+    submission: Mapped[Optional[Submission]] = relationship(back_populates="llm_runs")
+
+
+class GuardrailEventRecord(Base):
+    """
+    Disparo de guardrail (§27, bloco "Guardrails").
+
+    `masked_sample` é o único campo que carrega conteúdo, e ele já vem mascarado
+    da camada de guardrail — a diretriz é explícita: conteúdo mascarado, nunca
+    segredo puro.
+    """
+
+    __tablename__ = "guardrail_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    submission_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
+
+    rule_id: Mapped[str] = mapped_column(String(80), index=True)
+    stage: Mapped[str] = mapped_column(String(40), index=True)
+    action: Mapped[str] = mapped_column(String(20), index=True)
+    reason: Mapped[str] = mapped_column(Text)
+    target: Mapped[Optional[str]] = mapped_column(String(200))
+    masked_sample: Mapped[Optional[str]] = mapped_column(Text)
+
+    submission: Mapped[Optional[Submission]] = relationship(back_populates="guardrail_events")
+
+
+class RagQuery(Base):
+    """Consulta de recuperação executada e os trechos que ela devolveu (§27, bloco "RAG")."""
+
+    __tablename__ = "rag_queries"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    submission_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+    # `indicator_id` fica nulo enquanto a consulta for por dimensão (ver
+    # rag/queries.py); passa a ser preenchido quando a §16 entrar na Fase 1.
+    dimension: Mapped[Optional[str]] = mapped_column(String(40), index=True)
+    indicator_id: Mapped[Optional[str]] = mapped_column(String(80), index=True)
+    provider_id: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    query_text: Mapped[str] = mapped_column(Text)
+    top_k: Mapped[Optional[int]] = mapped_column(Integer)
+    result_count: Mapped[Optional[int]] = mapped_column(Integer)
+
+    submission: Mapped[Optional[Submission]] = relationship(back_populates="rag_queries")
+    chunks: Mapped[List["RetrievedChunk"]] = relationship(
+        back_populates="query", cascade="all, delete-orphan", order_by="RetrievedChunk.position"
+    )
+
+
+class RetrievedChunk(Base):
+    """Trecho devolvido por uma consulta, com o score de similaridade e a fonte."""
+
+    __tablename__ = "retrieved_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rag_query_id: Mapped[str] = mapped_column(
+        ForeignKey("rag_queries.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+
+    # Nulos em trechos indexados antes da Fase 0, que não têm identidade própria.
+    chunk_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    document_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    source_name: Mapped[Optional[str]] = mapped_column(String(300))
+    page: Mapped[Optional[int]] = mapped_column(Integer)
+    score: Mapped[Optional[float]] = mapped_column(Float)
+
+    query: Mapped[RagQuery] = relationship(back_populates="chunks")
+
+
+class IndicatorWeightRecord(Base):
+    """
+    Os três níveis de peso de um indicador numa avaliação (§32.2).
+
+    Persistidos lado a lado de propósito: a §7 é explícita em "nunca sobrescrever
+    um nível com outro". Guardar só o peso global tornaria impossível responder
+    *por que* ele é o que é — se veio de uma dimensão prioritária ou de um
+    indicador dominante dentro dela.
+
+    `local_weight` e `global_weight` nulos não significam zero: significam que o
+    indicador não recebeu coeficiente válido (resposta "não sei" ou ausente), e a
+    diretriz proíbe ler isso como irrelevância.
+    """
+
+    __tablename__ = "indicator_weights"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    submission_id: Mapped[str] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), index=True
+    )
+    dimension_id: Mapped[str] = mapped_column(String(40), index=True)
+    indicator_id: Mapped[str] = mapped_column(String(80), index=True)
+
+    relevance_coefficient: Mapped[Optional[float]] = mapped_column(Float)
+    relevance_state: Mapped[Optional[str]] = mapped_column(String(20))
+    local_weight: Mapped[Optional[float]] = mapped_column(Float)
+    dimension_weight: Mapped[Optional[float]] = mapped_column(Float)
+    global_weight: Mapped[Optional[float]] = mapped_column(Float)
+
+    # Peso após a renormalização sobre o conjunto comparável (§11.2). Fica nulo
+    # enquanto não houver evidência que defina o conjunto V — o que só acontece
+    # a partir da Fase 2.
+    effective_weight: Mapped[Optional[float]] = mapped_column(Float)
+    is_valid_for_comparison: Mapped[Optional[bool]] = mapped_column(Boolean)
+
+    submission: Mapped[Submission] = relationship(back_populates="indicator_weights")
+
+
+class Document(Base):
+    """
+    Documento ingerido no índice (§14.3).
+
+    `document_id` é o hash do conteúdo, então reingerir o mesmo arquivo cai na
+    mesma linha — o registro reflete documentos distintos, não uploads.
+    """
+
+    __tablename__ = "documents"
+
+    document_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_name: Mapped[str] = mapped_column(String(300), index=True)
+    source_type: Mapped[Optional[str]] = mapped_column(String(80))
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    provider_id: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    year: Mapped[Optional[int]] = mapped_column(Integer)
+    scope: Mapped[str] = mapped_column(String(80), index=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    chunk_count: Mapped[Optional[int]] = mapped_column(Integer)
+    document_hash: Mapped[Optional[str]] = mapped_column(String(64))
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
+    embedding_provider: Mapped[Optional[str]] = mapped_column(String(40))
+    embedding_model: Mapped[Optional[str]] = mapped_column(String(120))
+
+
+# Colunas acrescentadas depois que a tabela já existia em instalações no ar.
+# `create_all` cria tabelas novas, mas não altera tabelas existentes — daí o
+# passo aditivo abaixo. Só ADD COLUMN: nada é removido nem reescrito.
+_ADDITIVE_COLUMNS: Dict[str, Dict[str, str]] = {
+    "submissions": {
+        "embedding_provider": "VARCHAR(40)",
+        "embedding_model": "VARCHAR(120)",
+        "questionnaire_version": "VARCHAR(40)",
+        "questions_hash": "VARCHAR(64)",
+        "algorithm_version": "VARCHAR(40)",
+        "status": "VARCHAR(40)",
+    },
+}
+
+
+def _migrate_additive() -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as conn:
+        for table, columns in _ADDITIVE_COLUMNS.items():
+            if table not in existing_tables:
+                continue  # create_all já criou com o esquema completo
+            present = {col["name"] for col in inspector.get_columns(table)}
+            for name, ddl in columns.items():
+                if name in present:
+                    continue
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    _migrate_additive()
 
 
 @contextmanager
@@ -229,14 +470,25 @@ def session_scope():
 # ---------------------------------------------------------------------------
 
 
-def save_submission(request_payload: Dict[str, Any], response_payload: Dict[str, Any]) -> str:
+def save_submission(
+    request_payload: Dict[str, Any],
+    response_payload: Dict[str, Any],
+    llm_runs: Optional[List[Dict[str, Any]]] = None,
+    guardrail_events: Optional[List[Dict[str, Any]]] = None,
+    rag_queries: Optional[List[Dict[str, Any]]] = None,
+    status: Optional[str] = None,
+    indicator_weights: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     """
     Grava um envio completo e devolve o id (que também é o trace_id).
 
     Recebe os dois payloads já serializáveis para que o registro seja
-    exatamente o que trafegou na API, sem reconstrução.
+    exatamente o que trafegou na API, sem reconstrução. Os três blocos de
+    auditoria da §27 (LLM, guardrails e RAG) chegam separados porque são
+    coletados ao longo do processamento, não fazem parte da resposta da API.
     """
     ahp = response_payload.get("ahp") or {}
+    versions = response_payload.get("versions") or {}
     weights = ahp.get("weights") or response_payload.get("criteria_weights") or {}
     relevance = ahp.get("relevance_by_criterion") or {}
     synthesis = response_payload.get("synthesis") or {}
@@ -266,11 +518,85 @@ def save_submission(request_payload: Dict[str, Any], response_payload: Dict[str,
         top_provider_name=top.get("name"),
         top_provider_score=top.get("score"),
         llm_notes=response_payload.get("notes"),
-        llm_provider=os.getenv("LLM_PROVIDER"),
-        llm_model=_current_llm_model(),
+        llm_provider=versions.get("llm_provider") or _settings_value("llm_provider"),
+        llm_model=versions.get("llm_model") or _settings_value("llm_model"),
+        embedding_provider=versions.get("embedding_provider") or _settings_value("embedding_provider"),
+        embedding_model=versions.get("embedding_model") or _settings_value("embedding_model"),
+        questionnaire_version=versions.get("questionnaire_version"),
+        questions_hash=versions.get("questions_hash"),
+        algorithm_version=versions.get("algorithm_version"),
+        status=status,
         request_json=json.dumps(request_payload, ensure_ascii=False, default=_json_default),
         response_json=json.dumps(response_payload, ensure_ascii=False, default=_json_default),
     )
+
+    for run in llm_runs or []:
+        submission.llm_runs.append(
+            LLMRun(
+                prompt_id=run.get("prompt_id", ""),
+                prompt_version=str(run.get("prompt_version", "")),
+                provider=run.get("provider"),
+                model=run.get("model"),
+                status=run.get("status", ""),
+                latency_ms=run.get("latency_ms"),
+                attempts=run.get("attempts"),
+                input_tokens=run.get("input_tokens"),
+                output_tokens=run.get("output_tokens"),
+                total_tokens=run.get("total_tokens"),
+                input_hash=run.get("input_hash"),
+                output_hash=run.get("output_hash"),
+                error=run.get("error"),
+            )
+        )
+
+    for event_data in guardrail_events or []:
+        submission.guardrail_events.append(
+            GuardrailEventRecord(
+                rule_id=event_data.get("rule_id", ""),
+                stage=event_data.get("stage", ""),
+                action=event_data.get("action", ""),
+                reason=event_data.get("reason", ""),
+                target=event_data.get("target"),
+                masked_sample=event_data.get("masked_sample"),
+            )
+        )
+
+    for weight in indicator_weights or []:
+        submission.indicator_weights.append(
+            IndicatorWeightRecord(
+                dimension_id=weight.get("dimension", ""),
+                indicator_id=weight.get("indicator_id", ""),
+                relevance_coefficient=weight.get("relevance_coefficient"),
+                relevance_state=weight.get("relevance_state"),
+                local_weight=weight.get("local_weight"),
+                dimension_weight=weight.get("dimension_weight"),
+                global_weight=weight.get("global_weight"),
+                effective_weight=weight.get("effective_weight"),
+                is_valid_for_comparison=weight.get("is_valid_for_comparison"),
+            )
+        )
+
+    for query in rag_queries or []:
+        record = RagQuery(
+            dimension=query.get("dimension"),
+            indicator_id=query.get("indicator_id"),
+            provider_id=query.get("provider_id"),
+            query_text=query.get("query_text", ""),
+            top_k=query.get("top_k"),
+            result_count=len(query.get("chunks") or []),
+        )
+        for position, chunk in enumerate(query.get("chunks") or []):
+            record.chunks.append(
+                RetrievedChunk(
+                    position=position,
+                    chunk_id=chunk.get("chunk_id"),
+                    document_id=chunk.get("document_id"),
+                    source_name=chunk.get("file_name"),
+                    page=chunk.get("page"),
+                    score=chunk.get("score"),
+                )
+            )
+        submission.rag_queries.append(record)
 
     for i, ans in enumerate(request_payload.get("answers") or []):
         submission.answers.append(
@@ -314,16 +640,84 @@ def save_submission(request_payload: Dict[str, Any], response_payload: Dict[str,
         return submission.id
 
 
-def _current_llm_model() -> Optional[str]:
-    """Modelo em uso, conforme o provedor configurado — rastreabilidade da execução."""
-    provider = (os.getenv("LLM_PROVIDER") or "openai").lower()
-    return {
-        "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        "groq": os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
-        "openrouter": os.getenv("OPENROUTER_MODEL"),
-        "gemini": os.getenv("GEMINI_MODEL"),
-        "ollama": os.getenv("OLLAMA_MODEL"),
-    }.get(provider)
+def save_documents(details: List[Dict[str, Any]]) -> int:
+    """
+    Registra os documentos de uma ingestão (§14.3, "metadados persistidos").
+
+    Idempotente por `document_id`: como o id é o hash do conteúdo, reingerir o
+    mesmo arquivo atualiza a linha existente em vez de duplicá-la. Um arquivo
+    editado gera outro hash e portanto outra linha — que é o comportamento certo,
+    porque passa a ser outro documento.
+    """
+    if not details:
+        return 0
+
+    embedding_provider = _settings_value("embedding_provider")
+    embedding_model = _settings_value("embedding_model")
+    saved = 0
+
+    with session_scope() as session:
+        for detail in details:
+            document_id = detail.get("document_id")
+            if not document_id:
+                continue
+            existing = session.get(Document, document_id)
+            if existing is None:
+                existing = Document(document_id=document_id)
+                session.add(existing)
+            existing.source_name = detail.get("file_name") or ""
+            existing.source_type = detail.get("source_type")
+            existing.source_url = detail.get("source_url")
+            existing.provider_id = detail.get("provider")
+            existing.year = detail.get("year")
+            existing.scope = detail.get("scope") or ""
+            existing.session_id = detail.get("session_id")
+            existing.chunk_count = detail.get("chunks")
+            existing.document_hash = detail.get("document_hash")
+            existing.ingested_at = _now()
+            existing.embedding_provider = embedding_provider
+            existing.embedding_model = embedding_model
+            saved += 1
+
+    return saved
+
+
+def list_documents() -> List[Dict[str, Any]]:
+    """Documentos ingeridos, para a área de gestão e para o painel de cobertura."""
+    with session_scope() as session:
+        rows = session.scalars(select(Document).order_by(Document.ingested_at.desc())).all()
+        return [
+            {
+                "document_id": d.document_id,
+                "source_name": d.source_name,
+                "source_type": d.source_type,
+                "provider_id": d.provider_id,
+                "year": d.year,
+                "scope": d.scope,
+                "session_id": d.session_id,
+                "chunk_count": d.chunk_count,
+                "ingested_at": _iso(d.ingested_at),
+                "embedding_provider": d.embedding_provider,
+                "embedding_model": d.embedding_model,
+            }
+            for d in rows
+        ]
+
+
+def _settings_value(attribute: str) -> Optional[str]:
+    """
+    Valor de configuração como fallback do bloco de versões.
+
+    A resolução de provedor/modelo mora em `config.settings` desde a Fase 0; aqui
+    ela só é consultada quando a resposta não trouxe o bloco `versions` — caso de
+    envio processado por um caminho que ainda não o produz.
+    """
+    try:
+        from config import get_settings
+
+        return getattr(get_settings(), attribute, None)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +800,85 @@ def get_submission(submission_id: str) -> Optional[Dict[str, Any]]:
             "llm_notes": s.llm_notes,
             "llm_provider": s.llm_provider,
             "llm_model": s.llm_model,
+            "status": s.status,
+            # Versionamento (§28): identifica com que questionário, algoritmo e
+            # modelos este resultado foi produzido.
+            "versions": {
+                "questionnaire_version": s.questionnaire_version,
+                "questions_hash": s.questions_hash,
+                "algorithm_version": s.algorithm_version,
+                "llm_provider": s.llm_provider,
+                "llm_model": s.llm_model,
+                "embedding_provider": s.embedding_provider,
+                "embedding_model": s.embedding_model,
+            },
+            "llm_runs": [
+                {
+                    "prompt_id": r.prompt_id,
+                    "prompt_version": r.prompt_version,
+                    "provider": r.provider,
+                    "model": r.model,
+                    "status": r.status,
+                    "latency_ms": r.latency_ms,
+                    "attempts": r.attempts,
+                    "input_tokens": r.input_tokens,
+                    "output_tokens": r.output_tokens,
+                    "total_tokens": r.total_tokens,
+                    "input_hash": r.input_hash,
+                    "output_hash": r.output_hash,
+                    "error": r.error,
+                    "created_at": _iso(r.created_at),
+                }
+                for r in s.llm_runs
+            ],
+            "guardrail_events": [
+                {
+                    "rule_id": g.rule_id,
+                    "stage": g.stage,
+                    "action": g.action,
+                    "reason": g.reason,
+                    "target": g.target,
+                    "masked_sample": g.masked_sample,
+                    "created_at": _iso(g.created_at),
+                }
+                for g in s.guardrail_events
+            ],
+            "indicator_weights": [
+                {
+                    "dimension": w.dimension_id,
+                    "indicator_id": w.indicator_id,
+                    "relevance_coefficient": w.relevance_coefficient,
+                    "relevance_state": w.relevance_state,
+                    "local_weight": w.local_weight,
+                    "dimension_weight": w.dimension_weight,
+                    "global_weight": w.global_weight,
+                    "effective_weight": w.effective_weight,
+                    "is_valid_for_comparison": w.is_valid_for_comparison,
+                }
+                for w in s.indicator_weights
+            ],
+            "rag_queries": [
+                {
+                    "dimension": q.dimension,
+                    "indicator_id": q.indicator_id,
+                    "provider_id": q.provider_id,
+                    "query_text": q.query_text,
+                    "top_k": q.top_k,
+                    "result_count": q.result_count,
+                    "chunks": [
+                        {
+                            "position": c.position,
+                            "chunk_id": c.chunk_id,
+                            "document_id": c.document_id,
+                            "source_name": c.source_name,
+                            "page": c.page,
+                            "score": c.score,
+                        }
+                        for c in q.chunks
+                    ],
+                }
+                for q in s.rag_queries
+            ],
             "answers": [
                 {
                     "position": a.position,
