@@ -1,0 +1,224 @@
+{
+  "_leia_me": [
+    "Configuração declarativa dos indicadores (diretriz §16 e §39).",
+    "",
+    "Há um indicador para cada pergunta fechada dos blocos A, B e C — o mapeamento",
+    "é 1:1 e vem do próprio questionário da pesquisa, via `question_id`.",
+    "",
+    "O que é derivado do questionário e da diretriz (não é decisão de",
+    "implementação): id, dimension, name, question_id e search_terms (§40).",
+    "",
+    "O que AINDA PRECISA DE CONFIRMAÇÃO ACADÊMICA está marcado indicador a",
+    "indicador em `_todo`: data_type, direction e a rubrica dos qualitativos",
+    "(TODO ACADÊMICO 02). A diretriz é explícita em não fixar isso sem decisão.",
+    "",
+    "A §41.2 (TODO 06) orienta, nesta versão do produto, a extrair valores",
+    "publicados pelos provedores e normalizá-los — não recalcular PUE/CUE/SCI a",
+    "partir de componentes. Por isso não há campo de fórmula aqui."
+  ],
+  "version": "1",
+  "status": "provisional",
+
+  "dimensions": {
+    "sustainability": { "name": "Sustentabilidade" },
+    "performance": { "name": "Desempenho Operacional" },
+    "security": { "name": "Segurança da Informação" }
+  },
+
+  "indicators": [
+    {
+      "id": "sustainability_energy_efficiency",
+      "dimension": "sustainability",
+      "name": "Eficiência energética dos data centers",
+      "question_id": "sust_q1",
+      "data_type": "quantitative",
+      "direction": "minimize",
+      "expected_units": ["ratio", "PUE"],
+      "_todo": "Direção fixada pelo PUE (menor é melhor). Se a dissertação adotar o DCiE como métrica primária, direction passa a 'benefit'.",
+      "search_terms": [
+        "PUE", "Power Usage Effectiveness", "DCiE",
+        "Data Center Infrastructure Efficiency", "A-PUE",
+        "eficiência energética", "energy efficiency",
+        "consumo energético", "power consumption",
+        "data center energy efficiency"
+      ]
+    },
+    {
+      "id": "sustainability_renewable_energy",
+      "dimension": "sustainability",
+      "name": "Utilização de fontes de energia renovável",
+      "question_id": "sust_q2",
+      "data_type": "quantitative",
+      "direction": "benefit",
+      "expected_units": ["%", "percent"],
+      "search_terms": [
+        "renewable energy", "renewable electricity", "clean energy",
+        "carbon-free energy", "energia renovável", "solar", "wind",
+        "renewable power", "clean energy procurement"
+      ]
+    },
+    {
+      "id": "sustainability_carbon_emissions",
+      "dimension": "sustainability",
+      "name": "Redução de emissões de gases de efeito estufa",
+      "question_id": "sust_q3",
+      "data_type": "quantitative",
+      "direction": "minimize",
+      "expected_units": ["tCO2e", "gCO2e/kWh", "ratio", "CUE"],
+      "_todo": "Tratado como quantitativo (CUE / intensidade de carbono). Boa parte da evidência publicada é de compromisso (net-zero), não de valor — se a dissertação optar por avaliar compromissos, isto vira qualitativo com rubrica própria.",
+      "search_terms": [
+        "CUE", "Carbon Usage Effectiveness", "SCI", "carbon intensity",
+        "carbon footprint", "GHG emissions", "greenhouse gas",
+        "emissões de carbono", "gases de efeito estufa", "CO2",
+        "net-zero", "carbon neutral", "decarbonization"
+      ]
+    },
+    {
+      "id": "sustainability_ewaste_management",
+      "dimension": "sustainability",
+      "name": "Gestão de resíduos eletrônicos",
+      "question_id": "sust_q4",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02 — categorias da rubrica.",
+      "search_terms": [
+        "e-waste", "electronic waste", "recycling", "reciclagem",
+        "descarte eletrônico", "disposal", "refurbishment",
+        "recondicionamento", "reuse", "reutilização"
+      ]
+    },
+    {
+      "id": "sustainability_circularity",
+      "dimension": "sustainability",
+      "name": "Circularidade e ciclo de vida dos equipamentos",
+      "question_id": "sust_q5",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02 — categorias da rubrica.",
+      "search_terms": [
+        "circular economy", "economia circular", "circularidade",
+        "ciclo de vida", "life cycle", "component reuse",
+        "reutilização de componentes", "refurbishment",
+        "prolongamento da vida útil"
+      ]
+    },
+
+    {
+      "id": "performance_availability",
+      "dimension": "performance",
+      "name": "Disponibilidade dos serviços",
+      "question_id": "perf_q1",
+      "data_type": "quantitative",
+      "direction": "benefit",
+      "expected_units": ["%", "percent"],
+      "search_terms": [
+        "availability", "uptime", "SLA", "service level agreement",
+        "disponibilidade", "downtime", "service level",
+        "monthly uptime percentage"
+      ]
+    },
+    {
+      "id": "performance_support",
+      "dimension": "performance",
+      "name": "Suporte técnico e resposta a incidentes",
+      "question_id": "perf_q2",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02. Se a dissertação optar por comparar tempo de resposta contratual, vira quantitativo com direction 'minimize'.",
+      "search_terms": [
+        "technical support", "suporte técnico", "support SLA",
+        "incident response", "response time", "resolution time",
+        "tempo de resposta", "24/7 support", "severity level"
+      ]
+    },
+    {
+      "id": "performance_latency",
+      "dimension": "performance",
+      "name": "Latência e tempo de resposta",
+      "question_id": "perf_q3",
+      "data_type": "quantitative",
+      "direction": "minimize",
+      "expected_units": ["ms", "milliseconds"],
+      "search_terms": [
+        "latency", "latência", "network latency", "response time",
+        "tempo médio de resposta", "round trip time", "RTT"
+      ]
+    },
+    {
+      "id": "performance_scalability",
+      "dimension": "performance",
+      "name": "Escalabilidade e elasticidade",
+      "question_id": "perf_q4",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02 — categorias da rubrica.",
+      "search_terms": [
+        "scalability", "elasticity", "escalabilidade", "elasticidade",
+        "autoscaling", "horizontal scaling", "vertical scaling",
+        "dynamic provisioning", "throughput", "compute capacity"
+      ]
+    },
+
+    {
+      "id": "security_certifications",
+      "dimension": "security",
+      "name": "Certificações e conformidade",
+      "question_id": "sec_q1",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02 — categorias da rubrica.",
+      "_nota": "A §41.1 e o GUARDRAIL 5 valem aqui: mencionar uma norma não é possuir a certificação. A rubrica precisa distinguir os dois casos.",
+      "search_terms": [
+        "ISO/IEC 27001", "ISO/IEC 27017", "ISO/IEC 27018", "SOC 2", "SOC 1",
+        "CSA STAR", "NIST", "compliance", "conformidade", "certification",
+        "certificação", "auditoria", "audit report", "attestation"
+      ]
+    },
+    {
+      "id": "security_backup_recovery",
+      "dimension": "security",
+      "name": "Backup, recuperação de desastres e continuidade",
+      "question_id": "sec_q2",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02. A §8.1 admite RPO/RTO como quantitativos 'quando comparáveis' — se a dissertação fixar isso, o indicador se desdobra.",
+      "search_terms": [
+        "backup", "disaster recovery", "recuperação de desastres",
+        "business continuity", "continuidade de negócio",
+        "RPO", "RTO", "recovery point objective", "recovery time objective",
+        "replication", "failover"
+      ]
+    },
+    {
+      "id": "security_iam",
+      "dimension": "security",
+      "name": "Identidade, autenticação e controle de acesso",
+      "question_id": "sec_q3",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02 — categorias da rubrica.",
+      "search_terms": [
+        "IAM", "identity and access management", "MFA", "2FA",
+        "multi-factor authentication", "autenticação multifator",
+        "SSO", "single sign-on", "RBAC", "ABAC", "least privilege",
+        "access control", "controle de acesso", "authorization"
+      ]
+    },
+    {
+      "id": "security_encryption",
+      "dimension": "security",
+      "name": "Proteção de dados e criptografia",
+      "question_id": "sec_q4",
+      "data_type": "qualitative",
+      "rubric": "ordinal_4",
+      "_todo": "TODO ACADÊMICO 02 — categorias da rubrica.",
+      "_nota": "A §41.1 vale aqui: SHA-1/SHA-2 são funções de hash, não criptografia. A presença de 'SHA-256' não sustenta 'dados criptografados'.",
+      "search_terms": [
+        "encryption at rest", "encryption in transit",
+        "criptografia em repouso", "criptografia em trânsito",
+        "AES", "AES-256", "TLS", "key management",
+        "gerenciamento de chaves", "KMS", "HSM", "customer managed keys"
+      ]
+    }
+  ]
+}

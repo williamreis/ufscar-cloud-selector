@@ -1,16 +1,34 @@
-fastapi
-uvicorn
-pydantic
-python-dotenv
-langchain==0.1.17
-langchain-community==0.0.36
-langchain-core==0.1.52
-langchain-openai==0.1.4
-chromadb
-openai==1.16.1
-numpy
-pandas
-streamlit
-requests
-langchain-groq==0.1.3
-sentence-transformers
+# Web framework
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-multipart>=0.0.9
+python-dotenv>=1.0
+
+# LangChain (pacotes ativos; langchain-community está em sunset/arquivado mas
+# ainda é o único lar da integração FAISS/loaders, por isso permanece aqui)
+langchain-core>=0.3
+langchain-text-splitters>=0.3
+langchain-community>=0.3,<0.4
+langchain-openai>=1.4
+langchain-groq>=1.1
+langchain-huggingface>=1.2
+langchain-google-genai>=2.0
+langchain-ollama>=0.2
+
+# Vector store (substitui o chromadb)
+faiss-cpu>=1.8
+
+openai>=1.40
+
+# Persistência de auditoria (SQLite via ORM; troca para Postgres é só a URL)
+sqlalchemy>=2.0
+
+numpy>=1.26
+pandas>=2.2
+sentence-transformers>=3.0
+pypdf>=4.2
+requests>=2.32
+
+# Testes (diretriz §42 exige suíte em pytest)
+pytest>=8.0
