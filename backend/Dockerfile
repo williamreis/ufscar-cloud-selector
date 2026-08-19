@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y build-essential wget curl cargo \
 COPY backend/app /backend/app
 COPY backend/.env /backend/.env
 COPY backend/scripts /backend/scripts
+COPY backend/methodology /backend/methodology
 
 # Cria diretório persistente para o índice FAISS
 RUN mkdir -p /backend/data/faiss_index
