@@ -1,0 +1,120 @@
+{
+  "_leia_me": [
+    "Configuração metodológica da avaliação. Fica fora do código de propósito:",
+    "a diretriz (§45) determina que estes parâmetros sejam externalizados, para",
+    "que a decisão acadêmica possa mudar sem alterar regra de negócio.",
+    "",
+    "Este arquivo é montado como volume (METHODOLOGY_SCALES_PATH) e entra no",
+    "hash de versão de cada avaliação — mudá-lo muda a versão, não o passado.",
+    "",
+    "Campos com \"status\": \"provisional\" ainda dependem de confirmação na",
+    "dissertação. Eles NÃO são decisão de implementação."
+  ],
+
+  "relevance_coefficients": {
+    "_decisao": "TODO ACADÊMICO 01 — resolvido: 'irrelevante' vale 1.",
+    "status": "decided",
+    "_nota_irrelevante": [
+      "Com 1, um indicador declarado irrelevante ainda recebe peso positivo",
+      "dentro da dimensão: pesa pouco, mas pesa. É o valor que a diretriz",
+      "apresenta na estrutura sugerida da §5.1.",
+      "",
+      "A alternativa citada pela diretriz (0) foi considerada e descartada. Ela",
+      "traria um caso que esta escala não tem: se TODOS os indicadores de uma",
+      "dimensão fossem irrelevantes, a soma dos coeficientes zeraria e a",
+      "dimensão ficaria sem peso, exigindo revisão. Com 1 isso não acontece —",
+      "sempre há denominador positivo enquanto houver resposta.",
+      "",
+      "'irrelevante' = 1 continua diferente de 'nao_sei' = null: o primeiro é",
+      "uma resposta ('importa pouco'), o segundo é ausência dela ('não sei')."
+    ],
+    "values": {
+      "decisivo": 5,
+      "muito_relevante": 4,
+      "relevante": 3,
+      "pouco_relevante": 2,
+      "irrelevante": 1,
+      "nao_sei": null
+    },
+    "_rotulos": "Texto da alternativa no questions.json → chave acima.",
+    "labels": {
+      "Decisivo (critério indispensável)": "decisivo",
+      "Muito relevante": "muito_relevante",
+      "Relevante": "relevante",
+      "Pouco relevante": "pouco_relevante",
+      "Irrelevante": "irrelevante",
+      "Não sei / não tenho informações suficientes": "nao_sei"
+    }
+  },
+
+  "ahp": {
+    "_nota": [
+      "A §6.3 descreve o procedimento da dissertação: somar cada coluna, dividir",
+      "cada elemento pela soma da sua coluna e tirar a média aritmética de cada",
+      "linha da matriz normalizada. É o método que reproduz os valores esperados",
+      "no teste obrigatório da §6.5.",
+      "",
+      "'eigenvector' (método das potências) fica disponível para comparação. Para",
+      "a matriz da §6.5 os dois diferem em ~0,007 no primeiro peso — diferença",
+      "pequena, mas acima de erro de ponto flutuante."
+    ],
+    "weight_method": "column_mean",
+    "consistency_threshold": 0.10,
+    "random_index": {
+      "1": 0.0, "2": 0.0, "3": 0.58, "4": 0.90, "5": 1.12,
+      "6": 1.24, "7": 1.32, "8": 1.41, "9": 1.45, "10": 1.49
+    }
+  },
+
+  "default_rubrics": {
+    "_todo": "TODO ACADÊMICO 02 — as categorias de cada indicador qualitativo.",
+    "status": "provisional",
+    "_nota": [
+      "A diretriz manda implementar o mecanismo configurável e NÃO inventar as",
+      "rubricas definitivas. Estas são formas padrão, referenciadas por nome nos",
+      "indicadores; os nomes das categorias é que precisam de decisão acadêmica."
+    ],
+    "binary": {
+      "mode": "binary",
+      "categories": {
+        "verified": 1.0,
+        "not_verified": 0.0
+      }
+    },
+    "ordinal_4": {
+      "mode": "ordinal",
+      "categories": {
+        "level_1": 0.25,
+        "level_2": 0.50,
+        "level_3": 0.75,
+        "level_4": 1.00
+      }
+    }
+  },
+
+  "tie_break": {
+    "_todo": "TODO ACADÊMICO 03 — política de desempate.",
+    "status": "provisional",
+    "_nota": [
+      "'show_tie' é o único valor que não inventa critério oculto: provedores com",
+      "a mesma pontuação recebem a mesma posição e o empate aparece no relatório.",
+      "Qualquer outra política precisa ser decidida e documentada na dissertação."
+    ],
+    "policy": "show_tie",
+    "tolerance": 1e-09
+  },
+
+  "evidence": {
+    "_nota": [
+      "Estados da §11. Ausência de evidência não é desempenho zero: NOT_FOUND",
+      "retira o indicador do conjunto comparável, não zera a nota do provedor."
+    ],
+    "statuses": ["FOUND", "PARTIAL", "NOT_FOUND", "INVALID"],
+    "_todo_partial": [
+      "A §29.2 evita atribuir peso arbitrário como 0.5 ao PARTIAL sem decisão",
+      "acadêmica. Enquanto não houver decisão, PARTIAL não entra no conjunto",
+      "comparável e é reportado à parte."
+    ],
+    "partial_counts_as_comparable": false
+  }
+}

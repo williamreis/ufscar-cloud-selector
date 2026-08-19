@@ -1,31 +1,16 @@
 # ===============================
-#  Dockerfile - Frontend (Streamlit)
+#  Dockerfile - Frontend (React + Vite, servido via Nginx)
 # ===============================
 
-FROM python:3.11-slim AS base
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
 
-# Define o diretório de trabalho
-WORKDIR /frontend
-
-# Copia dependências do backend para aproveitar a mesma stack
-COPY requirements.txt /frontend/requirements.txt
-
-# Instala dependências do sistema, Streamlit e dependências mínimas
-# Adicionado 'build-essential' e 'cargo' para compilar dependências (como chromadb)
-RUN apt-get update && apt-get install -y build-essential curl cargo \
-    && pip install --no-cache-dir -r /frontend/requirements.txt
-
-# Copia o código do frontend
-COPY frontend/main.py /frontend/main.py
-
-# Define porta do Streamlit
-EXPOSE 8501
-
-# Desativa o prompt interativo do Streamlit
-ENV STREAMLIT_SERVER_HEADLESS=true
-
-# Evita cache de estado
-ENV STREAMLIT_SERVER_FILE_WATCHER_TYPE=none
-
-# Comando padrão de execução
-CMD ["streamlit", "run", "main.py", "--server.port=8501", "--server.address=0.0.0.0"]
+FROM nginx:1.27-alpine AS serve
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

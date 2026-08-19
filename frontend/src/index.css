@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb;
+  --page: #f9f9f7;
+  --ink-primary: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #898781;
+  --gridline: #e1e0d9;
+  --border: rgba(11, 11, 11, 0.1);
+
+  /* categorical (fixed order, identity-based — one slot per provider id) */
+  --series-1: #2a78d6; /* blue    - aws */
+  --series-2: #eb6834; /* orange  - gcp */
+  --series-3: #1baf7a; /* aqua    - azure */
+  --series-4: #eda100; /* yellow  - oracle */
+  --series-5: #e87ba4; /* magenta - ibm */
+  --series-green: #008300;
+  --series-violet: #4a3aa7;
+
+  --status-good: #0ca30c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface: #1a1a19;
+    --page: #0d0d0d;
+    --ink-primary: #ffffff;
+    --ink-secondary: #c3c2b7;
+    --ink-muted: #898781;
+    --gridline: #2c2c2a;
+    --border: rgba(255, 255, 255, 0.1);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-green: #008300;
+    --series-violet: #9085e9;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  color: #0f172a;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Malha de gradiente sutil no topo, sobre um plano quase branco */
+  background:
+    radial-gradient(60rem 30rem at 15% -10%, rgba(59, 130, 246, 0.10), transparent 60%),
+    radial-gradient(50rem 26rem at 90% 0%, rgba(99, 102, 241, 0.10), transparent 55%),
+    #f6f7fb;
+  background-attachment: fixed;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s ease-out both;
+}
+
+/* Respeita quem pediu menos movimento no sistema */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* O relatório é o que o gestor leva para a reunião — imprime sem cromo de navegação */
+@media print {
+  header,
+  footer,
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+}
