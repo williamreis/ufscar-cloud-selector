@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import Stepper from "../components/Stepper";
 import LoadingOverlay from "../components/LoadingOverlay";
 import PairwiseComparison from "../components/PairwiseComparison";
+import ChoiceCards from "../components/ChoiceCards";
 import { loadQuestions, postRecommend } from "../api";
 import { useAppState } from "../AppContext";
 import { dimensionOf, emptyAnswer, isComplete } from "../pairwise";
@@ -149,7 +150,13 @@ export default function Questionnaire() {
   function focusQuestion(id: string) {
     const el = document.getElementById(`field-${id}`);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
-    (el as HTMLSelectElement | null)?.focus({ preventScroll: true });
+    // Nas perguntas de escala o alvo é o cartão que envolve o grupo de opções,
+    // não um campo — o foco vai para o primeiro controle que houver dentro dele.
+    const focusable =
+      el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+        ? el
+        : el?.querySelector<HTMLElement>("input, textarea, select");
+    focusable?.focus({ preventScroll: true });
   }
 
   const optionsFor = (opts: string | string[]): string[] =>
@@ -360,60 +367,64 @@ export default function Questionnaire() {
                   );
                 }
 
+                const cardClass =
+                  "scroll-mt-32 rounded-2xl border bg-white p-4 shadow-sm transition-all " +
+                  (isMissing
+                    ? "border-red-300 ring-4 ring-red-500/10"
+                    : "border-slate-200/80 hover:border-slate-300");
+
+                const requiredMark = q.required && <span className="ml-1 text-red-500">*</span>;
+
+                const missingHint = isMissing && (
+                  <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-red-600">
+                    <span aria-hidden>⚠</span> Esta pergunta é obrigatória.
+                  </p>
+                );
+
+                // Escala de relevância: as alternativas viram cartões, no mesmo
+                // formato das comparações do bloco D. O grupo é um fieldset e o
+                // id do cartão é o alvo do "ir para a pergunta" do painel de erros.
+                if (q.type === "choice") {
+                  return (
+                    <div key={q.id} id={`field-${q.id}`} className={cardClass}>
+                      <fieldset>
+                        <legend className="mb-3 block text-sm leading-relaxed text-slate-700">
+                          {renderLabel(q.label)}
+                          {requiredMark}
+                        </legend>
+                        <ChoiceCards
+                          name={q.id}
+                          options={optionsFor(q.options!)}
+                          value={values[q.id] || ""}
+                          onChange={(val) => setValue(q.id, val)}
+                          invalid={isMissing}
+                        />
+                      </fieldset>
+                      {missingHint}
+                    </div>
+                  );
+                }
+
                 return (
-                  <div
-                    key={q.id}
-                    className={
-                      "rounded-2xl border bg-white p-4 shadow-sm transition-all " +
-                      (isMissing
-                        ? "border-red-300 ring-4 ring-red-500/10"
-                        : "border-slate-200/80 hover:border-slate-300")
-                    }
-                  >
+                  <div key={q.id} className={cardClass}>
                     <label
                       htmlFor={`field-${q.id}`}
                       className="mb-2 block text-sm leading-relaxed text-slate-700"
                     >
                       {renderLabel(q.label)}
-                      {q.required && <span className="ml-1 text-red-500">*</span>}
+                      {requiredMark}
                     </label>
 
-                    {q.type === "choice" ? (
-                      <select
-                        id={`field-${q.id}`}
-                        value={values[q.id] || ""}
-                        onChange={(e) => setValue(q.id, e.target.value)}
-                        aria-invalid={isMissing}
-                        className={
-                          "w-full rounded-xl border bg-white px-3.5 py-2.5 text-sm shadow-sm transition focus:outline-none focus:ring-4 " +
-                          (isMissing
-                            ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
-                            : "border-slate-300 focus:border-blue-500 focus:ring-blue-500/10")
-                        }
-                      >
-                        <option value="">Selecione uma opção</option>
-                        {optionsFor(q.options!).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <textarea
-                        id={`field-${q.id}`}
-                        value={values[q.id] || ""}
-                        onChange={(e) => setValue(q.id, e.target.value)}
-                        placeholder={q.placeholder || "Opcional"}
-                        rows={2}
-                        className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
-                      />
-                    )}
+                    <textarea
+                      id={`field-${q.id}`}
+                      value={values[q.id] || ""}
+                      onChange={(e) => setValue(q.id, e.target.value)}
+                      placeholder={q.placeholder || "Opcional"}
+                      rows={2}
+                      className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm shadow-sm transition focus:border-blue-500 focus:outline-none focus:ring-4 focus:ring-blue-500/10"
+                    />
 
-                    {isMissing && (
-                      <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-red-600">
-                        <span aria-hidden>⚠</span> Esta pergunta é obrigatória.
-                      </p>
-                    )}
+                    {missingHint}
                   </div>
                 );
               })}
