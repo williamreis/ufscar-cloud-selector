@@ -2,6 +2,7 @@ import type {
   AdminStats,
   IngestResult,
   QuestionsFile,
+  RagStatus,
   RecommendationResponse,
   RecommendPayload,
   SubmissionDetail,
@@ -95,7 +96,12 @@ function adminHeaders(): Record<string, string> {
 export class AdminAuthError extends Error {}
 
 async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/admin${path}`, { ...init, headers: adminHeaders() });
+  const res = await fetch(`${API_BASE}/admin${path}`, {
+    ...init,
+    // O Authorization é sempre nosso; o que a chamada pedir (o Content-Type de
+    // um corpo JSON, por exemplo) entra por cima.
+    headers: { ...adminHeaders(), ...((init?.headers as Record<string, string>) || {}) },
+  });
   if (res.status === 401) {
     setAdminToken(null);
     throw new AdminAuthError("Sessão expirada. Faça login novamente.");
@@ -146,6 +152,26 @@ export function adminSubmissions(
 
 export function adminSubmission(id: string): Promise<SubmissionDetail> {
   return adminFetch<SubmissionDetail>(`/submissions/${encodeURIComponent(id)}`);
+}
+
+/** Inventário da base documental global: data/pdf × documentos ingeridos × índice. */
+export function adminRagStatus(): Promise<RagStatus> {
+  return adminFetch<RagStatus>("/rag/status");
+}
+
+/**
+ * Executa a ingestão dos documentos de data/pdf no índice RAG.
+ *
+ * Sem `files`, ingere o diretório inteiro; com `files`, apenas os nomes
+ * indicados. Reingerir é seguro: o id do documento é o hash do conteúdo, então o
+ * mesmo arquivo atualiza a linha existente em vez de duplicá-la.
+ */
+export function adminRagIngest(files?: string[]): Promise<IngestResult> {
+  return adminFetch<IngestResult>("/rag/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files: files && files.length ? files : null }),
+  });
 }
 
 /** Exclusão definitiva — não há lixeira no backend. */

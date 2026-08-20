@@ -62,6 +62,18 @@ def save(index: Any) -> None:
     invalidate_cache()
 
 
+def count_chunks() -> int:
+    """
+    Total de trechos no índice, **inclusive os sem provedor atribuído**.
+
+    Diferente da soma de `count_chunks_by_provider`: um documento cujo nome não
+    casa com nenhum `doc_keywords` é indexado e responde às buscas, mas não conta
+    para provedor nenhum. Somar por provedor, portanto, subestima o índice.
+    """
+    index = load()
+    return len(index.docstore._dict) if index is not None else 0
+
+
 def count_chunks_by_provider() -> Dict[str, int]:
     """
     Quantos trechos indexados existem por provedor. Usado para excluir do ranking
@@ -82,6 +94,7 @@ def count_chunks_by_provider() -> Dict[str, int]:
 
 
 __all__ = [
+    "count_chunks",
     "count_chunks_by_provider",
     "index_path",
     "invalidate_cache",
