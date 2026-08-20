@@ -2,6 +2,7 @@ import type {
   AdminStats,
   IngestResult,
   QuestionsFile,
+  RagJob,
   RagStatus,
   RecommendationResponse,
   RecommendPayload,
@@ -160,18 +161,24 @@ export function adminRagStatus(): Promise<RagStatus> {
 }
 
 /**
- * Executa a ingestão dos documentos de data/pdf no índice RAG.
+ * Inicia a ingestão dos documentos de data/pdf e volta na hora (202).
  *
  * Sem `files`, ingere o diretório inteiro; com `files`, apenas os nomes
- * indicados. Reingerir é seguro: o id do documento é o hash do conteúdo, então o
- * mesmo arquivo atualiza a linha existente em vez de duplicá-la.
+ * indicados. A conclusão é acompanhada por `adminRagJob` — esperar a resposta
+ * estourava o `proxy_read_timeout` do nginx e devolvia 504 com a indexação ainda
+ * em andamento no servidor.
  */
-export function adminRagIngest(files?: string[]): Promise<IngestResult> {
-  return adminFetch<IngestResult>("/rag/ingest", {
+export function adminRagIngest(files?: string[]): Promise<RagJob> {
+  return adminFetch<RagJob>("/rag/ingest", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ files: files && files.length ? files : null }),
   });
+}
+
+/** Estado da ingestão em curso. Rota leve, própria para polling. */
+export function adminRagJob(): Promise<RagJob> {
+  return adminFetch<RagJob>("/rag/ingest");
 }
 
 /** Exclusão definitiva — não há lixeira no backend. */
