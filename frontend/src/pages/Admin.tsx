@@ -16,6 +16,8 @@ import {
   adminDeleteSubmission,
   adminExportCsv,
   adminLogin,
+  adminRagIngest,
+  adminRagStatus,
   adminSessionValid,
   adminStats,
   adminSubmission,
@@ -23,7 +25,13 @@ import {
   setAdminToken,
 } from "../api";
 import Report from "../components/Report";
-import type { AdminStats, SubmissionDetail, SubmissionListItem } from "../types";
+import type {
+  AdminStats,
+  IngestResult,
+  RagStatus,
+  SubmissionDetail,
+  SubmissionListItem,
+} from "../types";
 
 // Mesmas cores do relatório: um critério (ou provedor) tem a mesma cor em todo o
 // sistema, e ela nunca muda com a posição no ranking.
@@ -53,6 +61,8 @@ const pct = (v: number | null | undefined) =>
 const pctChart = (v: unknown) => `${(Number(v) * 100).toFixed(1)}%`;
 const num = (v: number | null | undefined, d = 3) => (v == null ? "—" : v.toFixed(d));
 const dateTime = (iso: string) => new Date(iso).toLocaleString("pt-BR");
+const bytes = (n: number) =>
+  n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 const dayLabel = (day: string) => {
   const [, m, d] = day.split("-");
   return `${d}/${m}`;
@@ -537,6 +547,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         </>
       )}
 
+      <RagPanel onError={handleError} />
+
       {toDelete && (
         <ConfirmDelete
           submission={toDelete}
@@ -551,6 +563,318 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Base documental do RAG: o que está em data/pdf, o que já foi indexado e o
+ * botão que roda a ingestão.
+ *
+ * Três fontes distintas são mostradas lado a lado porque elas podem discordar, e
+ * a discordância é a informação útil: o **diretório** (arquivo novo no servidor),
+ * a tabela de **documentos** (o que já foi ingerido) e o **índice FAISS** (o que
+ * de fato responde às buscas). Nada aqui é deduzido de nada — um documento
+ * registrado com o índice apagado aparece como índice ausente, não como pronto.
+ */
+function RagPanel({ onError }: { onError: (err: unknown) => void }) {
+  const [status, setStatus] = useState<RagStatus | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [result, setResult] = useState<IngestResult | null>(null);
+  const [running, setRunning] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setStatus(await adminRagStatus());
+    } catch (err) {
+      onError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [onError]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function ingest(files?: string[]) {
+    setRunning(true);
+    setResult(null);
+    try {
+      const ingestion = await adminRagIngest(files);
+      setResult(ingestion);
+      setSelected([]);
+      await load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const files = status?.files ?? [];
+  const toggle = (name: string) =>
+    setSelected((current) =>
+      current.includes(name) ? current.filter((n) => n !== name) : [...current, name],
+    );
+
+  return (
+    <section id="base-documental" className="mt-10">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-bold text-slate-900">Base documental (RAG)</h2>
+          <p className="mt-1 max-w-3xl text-sm text-slate-500">
+            Documentos oficiais em <code className="rounded bg-slate-100 px-1">data/pdf</code>,
+            indexados com escopo global e consultados em <strong>todas</strong> as buscas de
+            evidência. Reingerir um arquivo já indexado <strong>acrescenta os trechos dele ao
+            índice outra vez</strong> — o registro no banco é atualizado (o id do documento é o
+            hash do conteúdo), mas os vetores duplicam. Prefira marcar só os pendentes.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => load()}
+            disabled={loading || running}
+            className="rounded-xl border border-slate-300 px-3.5 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+          >
+            ⟳ Atualizar
+          </button>
+          <button
+            onClick={() => ingest(selected.length ? selected : undefined)}
+            disabled={running || loading || files.length === 0}
+            className="rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {running
+              ? "Indexando…"
+              : selected.length
+                ? `Executar ingestão (${selected.length} selecionado${selected.length > 1 ? "s" : ""})`
+                : "Executar ingestão de todos"}
+          </button>
+        </div>
+      </div>
+
+      {running && (
+        <p className="mb-3 text-sm text-slate-500">
+          A ingestão lê, fatia e calcula os embeddings de cada arquivo — em documentos longos
+          leva alguns minutos. Não feche a aba.
+        </p>
+      )}
+
+      <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat
+          label="Trechos indexados"
+          value={status ? String(status.chunks_total) : "—"}
+          hint={status ? `${status.documents_indexed} documento(s) registrado(s)` : undefined}
+        />
+        <Stat
+          label="Arquivos em data/pdf"
+          value={status ? String(files.length) : "—"}
+          hint={status ? `${status.pending_files} ainda não indexado(s)` : undefined}
+        />
+        <Stat
+          label="Modelo de embeddings"
+          value={status?.embedding_model || "—"}
+          hint={status ? status.embedding_provider : undefined}
+        />
+        <Stat
+          label="Fatiamento"
+          value={status ? `${status.chunk_size}` : "—"}
+          hint={status ? `sobreposição de ${status.chunk_overlap} caracteres` : undefined}
+        />
+      </div>
+
+      {status && !status.index_ready && (
+        <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Nenhum índice construído ainda: as buscas de evidência não têm o que recuperar e
+          nenhum provedor entra no ranking. Execute a ingestão.
+        </div>
+      )}
+
+      {status && status.index_ready && status.chunks_total > 0 && status.documents_indexed === 0 && (
+        <div className="mb-4 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+          O índice tem {status.chunks_total} trechos, mas <strong>nenhum documento
+          registrado</strong>: esta base foi indexada antes de a tabela de documentos existir
+          (ou por fora da aplicação). Os arquivos abaixo aparecem como pendentes por falta de
+          registro, não por falta de índice — reingerir todos duplicaria os vetores já presentes.
+        </div>
+      )}
+
+      {status && status.unassigned_files.length > 0 && (
+        <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <strong>{status.unassigned_files.length} arquivo(s) sem provedor identificável no
+          nome</strong> ({status.unassigned_files.join(", ")}). Eles são indexados, mas não viram
+          evidência de nenhum provedor — inclua o nome do provedor no nome do arquivo (ex.:{" "}
+          <code>aws-sustentabilidade-2025.pdf</code>) e reingira.
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <table className="w-full min-w-[46rem] text-sm">
+          <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="w-10 px-4 py-3" />
+              <th className="px-4 py-3 text-left font-semibold">Arquivo</th>
+              <th className="px-4 py-3 text-left font-semibold">Provedor</th>
+              <th className="px-4 py-3 text-right font-semibold">Ano</th>
+              <th className="px-4 py-3 text-right font-semibold">Tamanho</th>
+              <th className="px-4 py-3 text-left font-semibold">Situação</th>
+              <th className="px-4 py-3 text-right font-semibold">Trechos</th>
+              <th className="px-4 py-3 text-left font-semibold">Última ingestão</th>
+            </tr>
+          </thead>
+          <tbody className="tabular-nums">
+            {loading && files.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-4 py-8 text-center text-slate-400">
+                  Carregando…
+                </td>
+              </tr>
+            )}
+            {!loading && files.length === 0 && (
+              <tr>
+                <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
+                  Nenhum documento em <code>{status?.pdf_dir}</code>. Coloque os arquivos{" "}
+                  {(status?.allowed_extensions ?? []).join(" ou ")} nessa pasta do servidor e
+                  atualize.
+                </td>
+              </tr>
+            )}
+            {files.map((f) => (
+              <tr key={f.document_id + f.name} className="border-t border-slate-100 hover:bg-slate-50/60">
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(f.name)}
+                    onChange={() => toggle(f.name)}
+                    aria-label={`Selecionar ${f.name} para a ingestão`}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                </td>
+                <td
+                  className="px-4 py-3 font-medium text-slate-800"
+                  title={`Modificado em ${dateTime(new Date(f.modified_at * 1000).toISOString())}`}
+                >
+                  {f.name}
+                </td>
+                <td className="px-4 py-3">
+                  {f.provider_id ? (
+                    <span className="flex items-center gap-2 text-slate-700">
+                      <span
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ backgroundColor: PROVIDER_COLORS[f.provider_id] || "#64748b" }}
+                        aria-hidden
+                      />
+                      {status?.providers.find((p) => p.id === f.provider_id)?.name || f.provider_id}
+                    </span>
+                  ) : (
+                    <span className="text-amber-600" title="Não vira evidência de nenhum provedor">
+                      — não atribuído
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right text-slate-600">{f.year ?? "—"}</td>
+                <td className="px-4 py-3 text-right text-slate-600">
+                  {f.size === 0 ? (
+                    <span className="text-red-600" title="Arquivo vazio: a extração textual falha">
+                      0 KB
+                    </span>
+                  ) : (
+                    bytes(f.size)
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {f.indexed ? (
+                    <span className="font-medium text-emerald-600">✓ Indexado</span>
+                  ) : (
+                    <span
+                      className="font-medium text-amber-600"
+                      title="Não consta na tabela de documentos ingeridos"
+                    >
+                      ⚠ Pendente
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right text-slate-600">{f.chunks ?? "—"}</td>
+                <td className="px-4 py-3 text-slate-500">
+                  {f.ingested_at ? dateTime(f.ingested_at) : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {status && status.providers.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-500">Trechos por provedor:</span>
+          {status.providers.map((p) => (
+            <span
+              key={p.id}
+              title={
+                p.chunks === 0
+                  ? "Sem documento indexado: fica fora da comparação"
+                  : `${p.chunks} trecho(s) indexado(s)`
+              }
+              className={
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-medium " +
+                (p.chunks === 0 ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-700")
+              }
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: PROVIDER_COLORS[p.id] || "#64748b" }}
+                aria-hidden
+              />
+              {p.name}: {p.chunks}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {result && (
+        <div className="mt-4 space-y-2">
+          <div
+            role="status"
+            className={
+              "rounded-2xl border px-4 py-3 text-sm " +
+              (result.chunks > 0
+                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                : "border-slate-300 bg-slate-50 text-slate-700")
+            }
+          >
+            {result.message ||
+              `${result.chunks} trecho(s) de ${result.files_processed} arquivo(s) indexado(s).`}
+          </div>
+          {result.errors.length > 0 && (
+            <div className="rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <p className="mb-1 font-semibold">
+                {result.errors.length} arquivo(s) não puderam ser indexados:
+              </p>
+              <ul className="list-disc space-y-0.5 pl-5">
+                {result.errors.map((e) => (
+                  <li key={e}>{e}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {result.guardrail_events && result.guardrail_events.length > 0 && (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              <p className="mb-1 font-semibold">Eventos de guardrail nesta ingestão:</p>
+              <ul className="list-disc space-y-0.5 pl-5">
+                {result.guardrail_events.map((ev, i) => (
+                  <li key={`${ev.rule_id}-${i}`}>
+                    <code>{ev.rule_id}</code> ({ev.action}) em {ev.target || "—"}: {ev.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

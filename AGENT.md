@@ -343,6 +343,42 @@ O `/control` (ingestão global de documentos) passou a usar essa mesma
 autenticação: antes a senha era comparada **no bundle do navegador** e o endpoint
 `/api/documents/ingest-global` ficava aberto a qualquer requisição.
 
+### 6.1. Base documental do RAG, dentro da área de gestão
+
+O painel **Base documental (RAG)**, no rodapé do `/admin`, executa a ingestão dos
+documentos de `data/pdf` sem sair da área de gestão — o `/control` continua
+existindo, com o mesmo pipeline e a mesma senha.
+
+| Rota | O que faz |
+| --- | --- |
+| `GET /api/admin/rag/status` | inventário: arquivos em `data/pdf`, documentos já ingeridos, estado do índice, trechos por provedor |
+| `POST /api/admin/rag/ingest` | executa a ingestão; com `{"files": [...]}`, só os arquivos indicados |
+
+O inventário cruza **três fontes que podem discordar**, e mostra a discordância
+em vez de deduzir uma da outra:
+
+- o **diretório** `data/pdf` — o que existe no servidor;
+- a tabela `documents` — o que já foi ingerido (chave: o hash do conteúdo, então
+  editar o arquivo o devolve para "pendente");
+- o **índice FAISS** — o que de fato responde às buscas.
+
+Duas consequências ficam explícitas na tela porque afetam a decisão do
+administrador:
+
+- **reingerir duplica vetores.** `rag.ingest_paths` faz `add_documents` sobre o
+  índice existente e não remove os chunks da ingestão anterior do mesmo
+  documento. O registro no banco é idempotente; o índice não é. É por isso que a
+  seleção por arquivo existe — reingerir só o pendente em vez do diretório todo.
+- **provedor sem trecho indexado fica fora do ranking** (a cobertura documental
+  do `/api/recommend`), então os contadores por provedor incluem os zerados.
+
+A seleção por nome passa por `guardrails.resolve_within`: um nome vindo da
+requisição não alcança arquivo fora de `data/pdf`.
+
+Os diretórios (`data/pdf`, `data/upload`) e o pipeline compartilhado saíram do
+`main.py` para `backend/app/documents.py` — `main` importa o router de `admin`, e
+as duas pontas precisam da mesma função de ingestão.
+
 ## Testes
 
 Os testes ficam em `backend/tests/` e **não tocam rede, LLM nem índice

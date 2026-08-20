@@ -268,6 +268,39 @@ export interface IngestResult {
   message?: string;
   details: { file: string; chunks: number }[];
   errors: string[];
+  /** Eventos de guardrail da ingestão (arquivo recusado, credencial mascarada). */
+  guardrail_events?: { rule_id: string; action: string; reason: string; target?: string | null }[];
+  unassigned_files?: string[];
+}
+
+/** Um arquivo em data/pdf, cruzado com o que já foi ingerido (GET /api/admin/rag/status). */
+export interface RagFile {
+  name: string;
+  size: number;
+  /** epoch em segundos, como vem do stat do arquivo */
+  modified_at: number;
+  document_id: string;
+  provider_id: string | null;
+  year: number | null;
+  indexed: boolean;
+  chunks: number | null;
+  ingested_at: string | null;
+}
+
+export interface RagStatus {
+  pdf_dir: string;
+  allowed_extensions: string[];
+  index_ready: boolean;
+  embedding_provider: string;
+  embedding_model: string;
+  chunk_size: number;
+  chunk_overlap: number;
+  files: RagFile[];
+  pending_files: number;
+  unassigned_files: string[];
+  documents_indexed: number;
+  chunks_total: number;
+  providers: { id: string; name: string; chunks: number }[];
 }
 
 export interface UploadedFile {

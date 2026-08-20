@@ -1,13 +1,14 @@
 """
 Endpoints da área de gestão (/api/admin/*).
 
-Todas as rotas de leitura exigem o token emitido em /api/admin/login. Só o
-próprio login fica aberto — e ainda assim com trava por IP.
+Todas as rotas exigem o token emitido em /api/admin/login — inclusive as que
+escrevem (exclusão de envio e ingestão documental). Só o próprio login fica
+aberto, e ainda assim com trava por IP.
 """
 
 import csv
 import io
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -16,6 +17,9 @@ from starlette.concurrency import run_in_threadpool
 
 import auth
 import db
+import documents
+from guardrails import GuardrailRejection
+from rag.metadata import SCOPE_GLOBAL
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -91,6 +95,61 @@ async def delete_submission(submission_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="Envio não encontrado.")
     return {"deleted": submission_id}
+
+
+# ---------------------------------------------------------------------------
+# Base documental do RAG
+#
+# O mesmo pipeline de `POST /api/documents/ingest-global`, exposto aqui com duas
+# diferenças que só fazem sentido para quem administra: o **inventário** (o que
+# está em data/pdf, o que já foi indexado, quem ficaria fora do ranking por falta
+# de documento) e a possibilidade de reingerir **apenas os arquivos escolhidos**,
+# em vez do diretório inteiro.
+# ---------------------------------------------------------------------------
+
+
+class RagIngestRequest(BaseModel):
+    # Nomes de arquivo em data/pdf. Vazio ou ausente = ingerir o diretório todo.
+    files: Optional[List[str]] = None
+
+
+@router.get("/rag/status", dependencies=[Depends(auth.require_admin)])
+async def rag_status():
+    """Inventário da base global: arquivos em data/pdf, índice e cobertura por provedor."""
+    return await run_in_threadpool(documents.global_inventory)
+
+
+@router.post("/rag/ingest", dependencies=[Depends(auth.require_admin)])
+async def rag_ingest(body: Optional[RagIngestRequest] = None):
+    """
+    Executa a ingestão dos documentos de data/pdf no índice RAG.
+
+    O registro no banco é idempotente por `document_id` (hash do conteúdo), mas o
+    índice FAISS **não**: `rag.ingest_paths` acrescenta os chunks ao índice
+    existente, sem remover os da ingestão anterior do mesmo documento. Reingerir
+    tudo duplica vetores, e é por isso que a seleção por arquivo existe.
+    """
+    selected = body.files if body else None
+    try:
+        paths = await run_in_threadpool(documents.global_paths, selected)
+    except GuardrailRejection as exc:
+        raise HTTPException(status_code=400, detail=exc.event.reason) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not paths:
+        return {
+            "chunks": 0,
+            "files_processed": 0,
+            "message": (
+                "Nenhum arquivo em data/pdf. Coloque os PDF/TXT no servidor e execute "
+                "a ingestão novamente."
+            ),
+            "details": [],
+            "errors": [],
+        }
+
+    return await documents.run_ingestion(paths, SCOPE_GLOBAL, None)
 
 
 @router.get("/export.csv", dependencies=[Depends(auth.require_admin)])

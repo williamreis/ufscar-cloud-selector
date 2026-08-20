@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -13,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import audit
 import auth
 import db
+import documents
 import rag
 from admin import router as admin_router
 from ahp import compute_ahp_ranking, derive_criteria_weights
@@ -81,23 +81,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# data/pdf: documentos do administrador, sempre usados na ingestão e em todas as consultas RAG
-PDF_DIR = Path(os.getenv("PDF_DIR", "../data/pdf")).resolve()
-PDF_DIR.mkdir(parents=True, exist_ok=True)
-
-# data/upload: base para uploads por sessão; cada sessão em data/upload/<session_id> (uso só na sessão ativa)
-UPLOAD_BASE_DIR = Path(os.getenv("UPLOAD_DIR", "../data/upload")).resolve()
-UPLOAD_BASE_DIR.mkdir(parents=True, exist_ok=True)
-
-# Serializa gravações no índice FAISS: ingestão roda em threadpool (não bloqueia
-# o event loop), mas duas ingestões em paralelo poderiam colidir no save_local.
-_ingest_lock = asyncio.Lock()
-
-
-def _allowed_extensions() -> tuple:
-    return get_settings().allowed_upload_extensions
-
-
+# Diretórios da base documental e o pipeline de ingestão vivem em `documents`:
+# a área de gestão (`admin.py`) executa a mesma ingestão global, e este módulo
+# importa o router dela — a função compartilhada não pode morar aqui.
+#
+#   data/pdf                   documentos do administrador, usados em toda busca RAG
+#   data/upload/<session_id>   anexos de uma avaliação, usados só na sessão ativa
 
 
 @app.post("/api/recommend", response_model=RecommendationResponse)
@@ -168,7 +157,7 @@ async def recommend(q: QuestionnaireResponse):
             status_code=409,
             detail=(
                 "Nenhum provedor possui documentos indexados. Faça a ingestão em "
-                "data/pdf (painel /control) antes de gerar uma recomendação."
+                "data/pdf (área de gestão → base documental) antes de gerar uma recomendação."
             ),
         )
 
@@ -340,17 +329,9 @@ def _upload_dir_for_session(session_id: str) -> Path:
     """Diretório de upload da sessão: data/upload/<session_id>."""
     if not session_id or not session_id.strip():
         raise HTTPException(status_code=400, detail="session_id é obrigatório para upload.")
-    d = UPLOAD_BASE_DIR / session_id.strip()
+    d = documents.upload_base_dir() / session_id.strip()
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def _count_documents(directory: Path) -> int:
-    if not directory.is_dir():
-        return 0
-    return sum(
-        1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in _allowed_extensions()
-    )
 
 
 @app.post("/api/documents/upload")
@@ -375,7 +356,7 @@ async def upload_documents(
     guardrail_log = GuardrailLog()
     try:
         enforce_document_quota(
-            _count_documents(upload_dir), len(files), target=session_id, log=guardrail_log
+            documents.count_documents(upload_dir), len(files), target=session_id, log=guardrail_log
         )
     except GuardrailRejection as exc:
         raise HTTPException(status_code=413, detail=exc.event.reason) from exc
@@ -423,9 +404,9 @@ async def get_document_file(
     if scope != SCOPE_GLOBAL:
         if not session_id:
             raise HTTPException(status_code=400, detail="session_id é obrigatório para scope=session.")
-        base_dir = UPLOAD_BASE_DIR / session_id.strip()
+        base_dir = documents.upload_base_dir() / session_id.strip()
     else:
-        base_dir = PDF_DIR
+        base_dir = documents.pdf_dir()
 
     # Aceita apenas o nome do arquivo e confirma que o caminho resolvido continua
     # dentro do diretório permitido — bloqueia travessia via "../" ou path absoluto.
@@ -436,7 +417,7 @@ async def get_document_file(
 
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
-    if candidate.suffix.lower() not in _allowed_extensions():
+    if candidate.suffix.lower() not in documents.allowed_extensions():
         raise HTTPException(status_code=400, detail="Formato não permitido.")
 
     media_type = "application/pdf" if candidate.suffix.lower() == ".pdf" else "text/plain"
@@ -453,34 +434,14 @@ async def list_uploaded_documents(session_id: Optional[str] = None):
     """Lista arquivos em data/upload/<session_id>. session_id obrigatório."""
     if not session_id:
         return {"files": [], "message": "Informe session_id na query."}
-    upload_dir = UPLOAD_BASE_DIR / session_id.strip()
+    upload_dir = documents.upload_base_dir() / session_id.strip()
     if not upload_dir.is_dir():
         return {"files": []}
     files = []
     for p in upload_dir.iterdir():
-        if p.is_file() and p.suffix.lower() in _allowed_extensions():
+        if p.is_file() and p.suffix.lower() in documents.allowed_extensions():
             files.append({"name": p.name, "size": p.stat().st_size})
     return {"files": files}
-
-
-async def _run_ingestion(paths: List[str], scope: str, session_id: Optional[str]) -> Dict[str, Any]:
-    """Ingestão + registro dos documentos, compartilhado entre global e sessão."""
-    guardrail_log = GuardrailLog()
-    async with _ingest_lock:
-        result = await run_in_threadpool(
-            rag.ingest_paths, paths, scope, session_id, None, guardrail_log
-        )
-
-    details = [{**detail, "session_id": session_id} for detail in result.get("details", [])]
-    try:
-        await run_in_threadpool(db.save_documents, details)
-    except Exception:
-        # O índice já foi gravado; perder o registro do documento não invalida a
-        # ingestão, mas precisa aparecer no log.
-        logger.exception("Falha ao registrar os documentos ingeridos")
-
-    result["guardrail_events"] = guardrail_log.as_dicts()
-    return result
 
 
 @app.post("/api/documents/ingest-global", dependencies=[Depends(auth.require_admin)])
@@ -489,9 +450,7 @@ async def run_ingest_global():
     Ingestão dos documentos em data/pdf (incluídos pelo administrador).
     São indexados com scope=global e consultados em todas as buscas RAG.
     """
-    paths = [
-        str(p) for p in PDF_DIR.iterdir() if p.is_file() and p.suffix.lower() in _allowed_extensions()
-    ]
+    paths = documents.global_paths()
     if not paths:
         return {
             "chunks": 0,
@@ -500,7 +459,7 @@ async def run_ingest_global():
             "details": [],
             "errors": [],
         }
-    return await _run_ingestion(paths, SCOPE_GLOBAL, None)
+    return await documents.run_ingestion(paths, SCOPE_GLOBAL, None)
 
 
 @app.post("/api/documents/ingest")
@@ -520,14 +479,10 @@ async def run_ingest_session(session_id: Optional[str] = None):
             "details": [],
             "errors": [],
         }
-    upload_dir = UPLOAD_BASE_DIR / session_id.strip()
+    upload_dir = documents.upload_base_dir() / session_id.strip()
     if not upload_dir.is_dir():
         return {"chunks": 0, "files_processed": 0, "message": "Nenhum arquivo para esta sessão.", "details": [], "errors": []}
-    paths = [
-        str(p)
-        for p in upload_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in _allowed_extensions()
-    ]
+    paths = [str(p) for p in documents.list_files(upload_dir)]
     if not paths:
         return {"chunks": 0, "files_processed": 0, "message": "Nenhum arquivo no diretório da sessão.", "details": [], "errors": []}
-    return await _run_ingestion(paths, evaluation_scope(session_id.strip()), session_id.strip())
+    return await documents.run_ingestion(paths, evaluation_scope(session_id.strip()), session_id.strip())
