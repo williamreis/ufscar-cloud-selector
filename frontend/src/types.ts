@@ -287,10 +287,30 @@ export interface RagFile {
   ingested_at: string | null;
 }
 
+/**
+ * Ingestão global em curso. Indexar a base leva minutos — mais que o
+ * `proxy_read_timeout` do nginx —, então a rota inicia o trabalho e a tela
+ * acompanha por polling em vez de esperar a resposta.
+ */
+export interface RagJob {
+  state: "idle" | "running" | "done" | "error";
+  job_id: string | null;
+  files: string[];
+  started_at: string | null;
+  finished_at: string | null;
+  progress: { done: number; total: number; current: string | null };
+  /** Parcial enquanto roda; final ao terminar. */
+  result: IngestResult | null;
+  error: string | null;
+  /** Só quando não havia o que ingerir. */
+  message?: string;
+}
+
 export interface RagStatus {
   pdf_dir: string;
   allowed_extensions: string[];
   index_ready: boolean;
+  job: RagJob;
   embedding_provider: string;
   embedding_model: string;
   chunk_size: number;

@@ -19,7 +19,6 @@ import auth
 import db
 import documents
 from guardrails import GuardrailRejection
-from rag.metadata import SCOPE_GLOBAL
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -119,37 +118,52 @@ async def rag_status():
     return await run_in_threadpool(documents.global_inventory)
 
 
-@router.post("/rag/ingest", dependencies=[Depends(auth.require_admin)])
+@router.get("/rag/ingest", dependencies=[Depends(auth.require_admin)])
+async def rag_ingest_job():
+    """
+    Estado da ingestão em curso — rota leve, feita para ser consultada de poucos
+    em poucos segundos. O inventário completo (`/rag/status`) relê o diretório e
+    não serve para acompanhamento.
+    """
+    return documents.current_job()
+
+
+@router.post("/rag/ingest", status_code=202, dependencies=[Depends(auth.require_admin)])
 async def rag_ingest(body: Optional[RagIngestRequest] = None):
     """
-    Executa a ingestão dos documentos de data/pdf no índice RAG.
+    **Inicia** a ingestão dos documentos de data/pdf e devolve na hora.
 
-    O registro no banco é idempotente por `document_id` (hash do conteúdo), mas o
-    índice FAISS **não**: `rag.ingest_paths` acrescenta os chunks ao índice
-    existente, sem remover os da ingestão anterior do mesmo documento. Reingerir
-    tudo duplica vetores, e é por isso que a seleção por arquivo existe.
+    Não espera terminar de propósito: indexar a base inteira passa dos 300s de
+    `proxy_read_timeout` do nginx, e a resposta síncrona virava 504 na tela
+    enquanto o backend seguia indexando. O acompanhamento é por `GET /rag/ingest`.
+
+    Sobre reingerir: o registro no banco é idempotente por `document_id` (hash do
+    conteúdo), mas o índice FAISS **não** — `rag.ingest_paths` acrescenta os
+    chunks ao índice existente sem remover os da ingestão anterior do mesmo
+    documento. Reingerir tudo duplica vetores, e é por isso que a seleção por
+    arquivo existe.
     """
     selected = body.files if body else None
     try:
-        paths = await run_in_threadpool(documents.global_paths, selected)
+        job = await documents.start_global_ingestion(selected)
+    except documents.IngestionInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except GuardrailRejection as exc:
         raise HTTPException(status_code=400, detail=exc.event.reason) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    if not paths:
+    if not job.get("paths"):
         return {
-            "chunks": 0,
-            "files_processed": 0,
+            **job,
             "message": (
                 "Nenhum arquivo em data/pdf. Coloque os PDF/TXT no servidor e execute "
                 "a ingestão novamente."
             ),
-            "details": [],
-            "errors": [],
         }
 
-    return await documents.run_ingestion(paths, SCOPE_GLOBAL, None)
+    job.pop("paths", None)
+    return job
 
 
 @router.get("/export.csv", dependencies=[Depends(auth.require_admin)])

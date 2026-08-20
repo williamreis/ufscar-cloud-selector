@@ -18,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from starlette.concurrency import run_in_threadpool
 
@@ -25,7 +26,7 @@ import db
 import rag
 from config import get_settings
 from guardrails import GuardrailLog, resolve_within
-from rag.metadata import SCOPE_GLOBAL, document_id_for, year_from_name
+from rag.metadata import SCOPE_GLOBAL, document_id_for, now_iso, year_from_name
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -108,6 +109,147 @@ async def run_ingestion(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Ingestão global como tarefa acompanhável
+#
+# Indexar a base inteira leva minutos: o nginx do frontend corta a requisição em
+# 300s (`proxy_read_timeout`) e a tela reportava falha para um trabalho que
+# continuava rodando no backend. Então a rota **inicia** a ingestão e devolve na
+# hora; o painel acompanha por polling.
+#
+# O estado vive em memória, num único processo: reiniciar o backend perde o
+# acompanhamento (a parte já indexada permanece no índice, porque cada arquivo é
+# gravado ao terminar). Fila persistente seria desproporcional para uma operação
+# que um administrador dispara manualmente.
+# ---------------------------------------------------------------------------
+
+STATE_IDLE = "idle"
+STATE_RUNNING = "running"
+STATE_DONE = "done"
+STATE_ERROR = "error"
+
+_job: Dict[str, Any] = {
+    "state": STATE_IDLE,
+    "job_id": None,
+    "files": [],
+    "started_at": None,
+    "finished_at": None,
+    "progress": {"done": 0, "total": 0, "current": None},
+    "result": None,
+    "error": None,
+}
+# O asyncio só guarda referência fraca para a task: sem isto ela pode ser
+# coletada no meio da execução.
+_job_task: Optional[Any] = None
+
+
+class IngestionInProgress(RuntimeError):
+    """Já existe uma ingestão global em curso."""
+
+
+def current_job() -> Dict[str, Any]:
+    """Cópia do estado da ingestão global, para o painel acompanhar."""
+    return {**_job, "progress": dict(_job["progress"])}
+
+
+def _empty_result() -> Dict[str, Any]:
+    return {
+        "chunks": 0,
+        "files_processed": 0,
+        "files_failed": 0,
+        "details": [],
+        "unassigned_files": [],
+        "documents": [],
+        "errors": [],
+        "guardrail_events": [],
+    }
+
+
+def _merge_result(accumulated: Dict[str, Any], part: Dict[str, Any]) -> None:
+    for key in ("chunks", "files_processed", "files_failed"):
+        accumulated[key] += part.get(key, 0)
+    for key in ("details", "unassigned_files", "documents", "errors", "guardrail_events"):
+        accumulated[key].extend(part.get(key, []))
+
+
+async def _run_global_job(paths: List[str]) -> None:
+    """
+    Executa a ingestão **um arquivo por vez**.
+
+    Arquivo a arquivo, e não o lote inteiro de uma vez, por dois motivos: o
+    progresso passa a ser real (e não uma barra inventada), e o que já foi
+    indexado fica gravado no índice mesmo que o processo caia no meio.
+    """
+    total = len(paths)
+    accumulated = _empty_result()
+    try:
+        for position, path in enumerate(paths):
+            _job["progress"] = {"done": position, "total": total, "current": Path(path).name}
+            part = await run_ingestion([path], SCOPE_GLOBAL, None)
+            _merge_result(accumulated, part)
+            # Resultado parcial visível durante a execução: um erro no terceiro
+            # arquivo aparece antes de o décimo segundo terminar.
+            _job["result"] = {**accumulated}
+        _job["progress"] = {"done": total, "total": total, "current": None}
+        _job["state"] = STATE_DONE
+    except Exception as exc:
+        logger.exception("Falha na ingestão global")
+        _job["state"] = STATE_ERROR
+        _job["error"] = f"{type(exc).__name__}: {exc}"
+        _job["result"] = {**accumulated}
+    finally:
+        _job["finished_at"] = now_iso()
+
+
+async def start_global_ingestion(file_names: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Inicia a ingestão global e devolve o estado inicial do job.
+
+    A descoberta e a validação dos caminhos acontecem aqui, de forma síncrona:
+    nome inválido ou diretório vazio precisa virar resposta de erro imediata, e
+    não um job que falha logo depois.
+    """
+    global _job_task
+
+    if _job["state"] == STATE_RUNNING:
+        raise IngestionInProgress("Já existe uma ingestão em andamento.")
+
+    paths = global_paths(file_names)
+    if not paths:
+        return {**current_job(), "paths": []}
+
+    _job.update(
+        {
+            "state": STATE_RUNNING,
+            "job_id": uuid4().hex,
+            "files": [Path(p).name for p in paths],
+            "started_at": now_iso(),
+            "finished_at": None,
+            "progress": {"done": 0, "total": len(paths), "current": None},
+            "result": None,
+            "error": None,
+        }
+    )
+    _job_task = asyncio.create_task(_run_global_job(paths))
+    return {**current_job(), "paths": paths}
+
+
+# Hash do conteúdo por (caminho, mtime, tamanho). O inventário é consultado a
+# cada abertura do painel e a cada acompanhamento de ingestão; sem cache, cada
+# consulta releria a base inteira do disco só para recalcular ids que não mudaram.
+_document_id_cache: Dict[str, Any] = {}
+
+
+def _document_id_cached(path: Path, stat: os.stat_result) -> str:
+    key = (str(path), stat.st_mtime, stat.st_size)
+    cached = _document_id_cache.get(str(path))
+    if cached and cached[0] == key:
+        return cached[1]
+    document_id = document_id_for(path.read_bytes())
+    _document_id_cache[str(path)] = (key, document_id)
+    return document_id
+
+
 def global_inventory() -> Dict[str, Any]:
     """
     Estado da base documental global, para a área de gestão.
@@ -135,8 +277,8 @@ def global_inventory() -> Dict[str, Any]:
     files: List[Dict[str, Any]] = []
     for path in list_files(pdf_dir()):
         try:
-            document_id = document_id_for(path.read_bytes())
             stat = path.stat()
+            document_id = _document_id_cached(path, stat)
         except OSError as exc:
             logger.warning("Não foi possível ler %s em data/pdf: %s", path.name, exc)
             continue
@@ -165,6 +307,7 @@ def global_inventory() -> Dict[str, Any]:
         "pdf_dir": str(pdf_dir()),
         "allowed_extensions": list(allowed_extensions()),
         "index_ready": rag.is_ready(),
+        "job": current_job(),
         "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
         "chunk_size": settings.chunk_size,
@@ -186,12 +329,15 @@ def global_inventory() -> Dict[str, Any]:
 
 
 __all__ = [
+    "IngestionInProgress",
     "allowed_extensions",
+    "current_job",
     "count_documents",
     "global_inventory",
     "global_paths",
     "list_files",
     "pdf_dir",
     "run_ingestion",
+    "start_global_ingestion",
     "upload_base_dir",
 ]
