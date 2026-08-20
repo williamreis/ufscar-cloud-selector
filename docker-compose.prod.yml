@@ -1,0 +1,145 @@
+# ===================================================================
+#  Compose de produção — VPS
+# ===================================================================
+#
+# Uso:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# O docker-compose.yml da raiz continua sendo o de desenvolvimento: ele monta o
+# código do host por cima da imagem e roda o uvicorn com --reload. Aqui é o
+# contrário — a imagem é a fonte da verdade, e o que se monta são só dados e
+# configuração.
+#
+# Diferenças que importam em relação ao de dev:
+#
+#   1. O backend não publica porta nenhuma. Quem fala com ele é o nginx do
+#      frontend, pela rede interna do compose, resolvendo o nome `cloud_backend`.
+#      No de dev o `ports: 8001:8000` publica em 0.0.0.0 — e como o Docker
+#      escreve na chain DOCKER do iptables, à frente do UFW, isso deixa a API e
+#      o /docs abertos para a internet mesmo com firewall no host.
+#
+#   2. `working_dir` é /backend/app, que é onde o Dockerfile de fato põe o
+#      código (COPY backend/app /backend/app). O compose de dev aponta para
+#      /app/app, que só existe por causa do bind mount — sem ele o container
+#      não sobe.
+#
+#   3. Os caminhos de dados vêm explícitos por env. O código resolve
+#      "../data/..." relativo ao cwd (db.py:62, main.py:85 e :89,
+#      config/settings.py:253), então mudar o working_dir mudaria onde o
+#      audit.db e o índice FAISS caem. Absoluto tira o cwd da equação.
+#
+#   4. Sem --reload. Em produção ele só fica varrendo o filesystem e derrubando
+#      o worker a cada arquivo tocado.
+#
+#   5. `depends_on` com `condition: service_healthy` — senão o healthcheck do
+#      backend vira decoração e as primeiras requisições depois do deploy
+#      podem pegar 502.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    image: cloud-selector-backend:prod
+    container_name: cloud_backend
+    restart: unless-stopped
+    working_dir: /backend/app
+    env_file:
+      - ./backend/.env
+    environment:
+      # Caminhos absolutos: independem do cwd do processo.
+      QUESTIONS_JSON_PATH: /backend/questionnaire/questions.json
+      AUDIT_DB_PATH: /backend/data/audit.db
+      VECTOR_DB_PATH: /backend/data/faiss_index
+      PDF_DIR: /backend/data/pdf
+      UPLOAD_DIR: /backend/data/upload
+    # `expose` em vez de `ports`: visível para o frontend na rede do compose,
+    # invisível para a internet.
+    expose:
+      - "8000"
+    volumes:
+      # Estado que precisa sobreviver ao deploy: audit.db, índice FAISS, PDFs e
+      # uploads. É o único bind mount de escrita — nada de código do host.
+      - ./backend/data:/backend/data
+      # Configuração do questionário, editável sem rebuild (o backend só lê).
+      - ./frontend/public/questions.json:/backend/questionnaire/questions.json:ro
+    # Um worker só, de propósito: o audit.db é SQLite e o índice FAISS é
+    # carregado em memória por processo. Escalar aqui exigiria trocar os dois.
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./frontend/Dockerfile
+    image: cloud-selector-frontend:prod
+    container_name: cloud_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Loopback apenas: quem serve a internet é o Traefik, via labels abaixo.
+    # Publicar em 0.0.0.0 deixaria o app acessível em HTTP puro na :8000, por
+    # fora do TLS — e o Docker escreve na chain DOCKER do iptables, à frente do
+    # UFW, então o firewall do host não seguraria. Ligado a 127.0.0.1 dá para
+    # depurar com `curl localhost:8000` no VPS sem expor nada.
+    ports:
+      - "127.0.0.1:8000:80"
+    labels:
+      # Sem traefik.enable=true o container é ignorado (--exposedbydefault=false).
+      - "traefik.enable=true"
+      - "traefik.http.routers.cloud-selector.rule=Host(`${APP_DOMAIN}`)"
+      # `websecure` e `letsencrypt` são os nomes definidos no command do Traefik.
+      - "traefik.http.routers.cloud-selector.entrypoints=websecure"
+      - "traefik.http.routers.cloud-selector.tls.certresolver=letsencrypt"
+      # Porta DENTRO do container (nginx), não a publicada no host.
+      - "traefik.http.services.cloud-selector.loadbalancer.server.port=80"
+    volumes:
+      - ./frontend/public/questions.json:/usr/share/nginx/html/questions.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+# -------------------------------------------------------------------
+#  Traefik / HTTPS
+# -------------------------------------------------------------------
+#
+# O roteamento está aplicado nos labels do serviço `frontend`. Só o frontend é
+# roteado: o `api.ts` chama `/api` relativo e o nginx do container faz o proxy
+# para o backend pela rede interna, então não há segundo router nem CORS.
+#
+# Pré-requisitos no VPS, antes do `up -d`:
+#
+#   1. Registro A do domínio apontando para o IP do VPS. O desafio HTTP-01 do
+#      Let's Encrypt não emite certificado para IP nu — é por isso que o
+#      domínio tem de existir antes de subir com os labels.
+#
+#   2. Um arquivo `.env` NESTE diretório (é o que o Compose interpola em
+#      ${APP_DOMAIN}; está no .gitignore):
+#
+#          APP_DOMAIN=selector.exemplo.br
+#
+#      Confira com `docker compose -f docker-compose.prod.yml config`, que
+#      imprime o Host(...) já resolvido.
+#
+#   3. 80 e 443 abertas. A :80 precisa continuar aberta mesmo com o redirect
+#      para HTTPS: é por ela que o HTTP-01 valida e renova o certificado.
+#
+# O Traefik roda com `network_mode: host` e `--providers.docker=true`. Estando
+# no namespace de rede do host ele alcança o container pelo IP na bridge do
+# compose, então não é preciso rede externa compartilhada nem o label
+# `traefik.docker.network`.
+#
+# Observação sobre o compose do Traefik: o bloco `ports: [8000, 8001]` não tem
+# efeito com `network_mode: host` (o processo já escuta direto nas portas do
+# host, 80 e 443 pelos entrypoints) e pode ser removido. Com o frontend
+# publicando em 127.0.0.1:8000 não há choque, mas a 8000 listada ali sugere um
+# mapeamento que não existe.
