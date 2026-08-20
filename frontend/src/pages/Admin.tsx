@@ -17,6 +17,7 @@ import {
   adminExportCsv,
   adminLogin,
   adminRagIngest,
+  adminRagJob,
   adminRagStatus,
   adminSessionValid,
   adminStats,
@@ -27,7 +28,7 @@ import {
 import Report from "../components/Report";
 import type {
   AdminStats,
-  IngestResult,
+  RagJob,
   RagStatus,
   SubmissionDetail,
   SubmissionListItem,
@@ -581,14 +582,17 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 function RagPanel({ onError }: { onError: (err: unknown) => void }) {
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  const [result, setResult] = useState<IngestResult | null>(null);
-  const [running, setRunning] = useState(false);
+  const [job, setJob] = useState<RagJob | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setStatus(await adminRagStatus());
+      const fresh = await adminRagStatus();
+      setStatus(fresh);
+      // O estado da ingestão vem junto do inventário: recarregar a página no
+      // meio de uma ingestão reencontra o trabalho em curso em vez de esquecê-lo.
+      setJob(fresh.job);
     } catch (err) {
       onError(err);
     } finally {
@@ -600,22 +604,48 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
     load();
   }, [load]);
 
+  const running = job?.state === "running";
+
+  // Acompanhamento: enquanto roda, consulta a rota leve (que não relê o
+  // diretório); ao terminar, recarrega o inventário uma única vez.
+  useEffect(() => {
+    if (!running) return;
+    let active = true;
+    const timer = setInterval(async () => {
+      try {
+        const fresh = await adminRagJob();
+        if (!active) return;
+        setJob(fresh);
+        if (fresh.state !== "running") load();
+      } catch (err) {
+        if (active) onError(err);
+      }
+    }, 3000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [running, load, onError]);
+
   async function ingest(files?: string[]) {
-    setRunning(true);
-    setResult(null);
     try {
-      const ingestion = await adminRagIngest(files);
-      setResult(ingestion);
+      setJob(await adminRagIngest(files));
       setSelected([]);
-      await load();
     } catch (err) {
-      onError(err);
-    } finally {
-      setRunning(false);
+      // Um 409 quer dizer que outra aba (ou outro administrador) já começou:
+      // em vez de mostrar o erro, entra no acompanhamento do que está rodando.
+      const conflict = err instanceof Error && err.message.startsWith("Erro 409");
+      if (conflict) {
+        await adminRagJob().then(setJob).catch(onError);
+      } else {
+        onError(err);
+      }
     }
   }
 
   const files = status?.files ?? [];
+  const result = job?.result ?? null;
+  const progress = job?.progress;
   const toggle = (name: string) =>
     setSelected((current) =>
       current.includes(name) ? current.filter((n) => n !== name) : [...current, name],
@@ -656,11 +686,33 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
         </div>
       </div>
 
-      {running && (
-        <p className="mb-3 text-sm text-slate-500">
-          A ingestão lê, fatia e calcula os embeddings de cada arquivo — em documentos longos
-          leva alguns minutos. Não feche a aba.
-        </p>
+      {running && progress && (
+        <div className="mb-4 rounded-2xl border border-blue-300 bg-blue-50 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm text-blue-900">
+            <span className="font-semibold">
+              Indexando {progress.done + 1} de {progress.total}
+              {progress.current ? `: ${progress.current}` : ""}
+            </span>
+            <span className="text-blue-700">
+              A ingestão roda no servidor — pode fechar esta aba e voltar depois.
+            </span>
+          </div>
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-blue-200">
+            <div
+              className="h-full rounded-full bg-blue-600 transition-all"
+              style={{
+                width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {job?.state === "error" && (
+        <div role="alert" className="mb-4 rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+          A ingestão foi interrompida: {job.error}. Os arquivos concluídos antes da falha
+          permanecem indexados.
+        </div>
       )}
 
       <div className="mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -845,8 +897,9 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
                 : "border-slate-300 bg-slate-50 text-slate-700")
             }
           >
-            {result.message ||
-              `${result.chunks} trecho(s) de ${result.files_processed} arquivo(s) indexado(s).`}
+            {job?.message ||
+              `${result.chunks} trecho(s) de ${result.files_processed} arquivo(s) ` +
+                (running ? "indexado(s) até agora." : "indexado(s).")}
           </div>
           {result.errors.length > 0 && (
             <div className="rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
