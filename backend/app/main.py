@@ -99,6 +99,43 @@ app.add_middleware(
 #   data/upload/<session_id>   anexos de uma avaliação, usados só na sessão ativa
 
 
+def _inconsistency_detail(ahp_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Corpo do 409 quando os julgamentos do bloco D se contradizem (§4.2.3).
+
+    Traz o que a interface precisa para *solicitar a revisão* em vez de só
+    recusar: a razão medida, o limite, as perguntas a rever e — quando há — o par
+    cujo julgamento mais destoa dos demais. Sem isso o gestor recebe "revise suas
+    comparações" e três perguntas idênticas para escolher.
+
+    O diagnóstico aponta; não corrige. A dissertação atribui a revisão ao decisor,
+    e um sistema que ajustasse o julgamento sozinho estaria fabricando a
+    preferência que ele deveria estar coletando.
+    """
+    julgamentos = ahp_result.get("judgments") or {}
+    return {
+        "error": "AHP_INCONSISTENT_JUDGMENTS",
+        "message": (
+            "As comparações do bloco D se contradizem entre si. Revise-as antes de "
+            "prosseguir: enquanto a razão de consistência estiver acima do limite, os "
+            "pesos das dimensões não representam uma ordem de prioridade coerente."
+        ),
+        "consistency_ratio": ahp_result.get("consistency_ratio"),
+        "consistency_threshold": ahp_result.get("consistency_threshold"),
+        "consistency_index": ahp_result.get("consistency_index"),
+        "lambda_max": ahp_result.get("lambda_max"),
+        # Perguntas do questionário a revisar, para a interface levar o gestor até elas.
+        "question_ids": [
+            j.get("question_id") for j in julgamentos.values() if j.get("question_id")
+        ],
+        "judgments": {
+            k: {"choice": j.get("choice"), "question_id": j.get("question_id")}
+            for k, j in julgamentos.items()
+        },
+        "worst_pair": ahp_result.get("worst_pair"),
+    }
+
+
 @app.post("/api/recommend", response_model=RecommendationResponse)
 async def recommend(q: QuestionnaireResponse):
     """
@@ -127,6 +164,20 @@ async def recommend(q: QuestionnaireResponse):
     #    O método (§6.3) e o limite de CR vêm da configuração metodológica.
     ahp_result = derive_criteria_weights(judgments, CRITERIA)
     criteria_weights = ahp_result["weights"]
+
+    # 3a) Porta da consistência (§4.2.3). A dissertação é explícita: "Caso o valor
+    #     de CR seja superior a 0,10, o sistema informa ao usuário a existência de
+    #     inconsistência nos julgamentos e solicita a revisão das comparações
+    #     ANTES DO PROSSEGUIMENTO do processo de avaliação". E logo adiante: "Uma
+    #     vez verificada a consistência da matriz de julgamentos, os pesos
+    #     relativos [...] podem ser utilizados na etapa subsequente".
+    #
+    #     Por isso a verificação vem aqui, antes de qualquer chamada à LLM: pesos
+    #     que se contradizem não devem produzir ranking, e gastar a extração
+    #     documental sobre eles seria pagar caro por um resultado que o próprio
+    #     método declara não utilizável.
+    if not ahp_result.get("is_consistent", True):
+        raise HTTPException(status_code=409, detail=_inconsistency_detail(ahp_result))
 
     # 3b) Pesos dos indicadores (§5.1 e §7). A partir daqui os blocos A/B/C têm
     #     destino metodológico: relevância → coeficiente → peso local → peso
@@ -313,12 +364,6 @@ async def recommend(q: QuestionnaireResponse):
     if sem_peso and not weight_set.dimensions_needing_review:
         limitations.append(
             f"{len(sem_peso)} indicador(es) sem peso por ausência de resposta de relevância."
-        )
-    if not ahp_result.get("is_consistent", True):
-        limitations.append(
-            f"Razão de consistência do AHP acima do limite "
-            f"({ahp_result['consistency_ratio']} > {ahp_result['consistency_threshold']}): "
-            "os julgamentos par a par se contradizem e o ranking é preliminar."
         )
     status = STATUS_COMPLETED_WITH_LIMITATIONS if limitations else STATUS_COMPLETED
 
