@@ -27,6 +27,28 @@ function computedValue(row: SynthesisIndicator): string {
 }
 
 /**
+ * Nível de atendimento em forma legível.
+ *
+ * Os níveis vêm da configuração (o Quadro 23 vive no `scales.json`), então aqui
+ * só se ajusta a apresentação: "nao_identificado" → "Nao identificado" seria
+ * pior que o original, e por isso o mapa acentua os nomes conhecidos e deixa
+ * qualquer outro passar como veio.
+ */
+const LEVEL_LABELS: Record<string, string> = {
+  nao_identificado: "Não identificado",
+  nao_atendido: "Não atendido",
+  baixo: "Baixo",
+  moderado: "Moderado",
+  alto: "Alto",
+  completo: "Completo",
+  comprovado: "Comprovado",
+};
+
+function levelLabel(category: string): string {
+  return LEVEL_LABELS[category] ?? category;
+}
+
+/**
  * Memória de cálculo do score final (Equação 5).
  *
  * Mostra a cadeia inteira de cada indicador — valor publicado no documento →
@@ -251,9 +273,12 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
                           <span className="block text-slate-700">
                             {row.extracted_value || "—"}
                           </span>
-                          <span className="block text-[11px] text-slate-400">
+                          <span
+                            className="block text-[11px] text-slate-400"
+                            title={row.category_condition ?? undefined}
+                          >
                             {row.category
-                              ? `${row.category} → ${computedValue(row)}`
+                              ? `${levelLabel(row.category)} → ${computedValue(row)}`
                               : computedValue(row)}
                           </span>
                         </td>

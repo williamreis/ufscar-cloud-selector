@@ -142,7 +142,10 @@ export interface SynthesisIndicator {
   /** Valor numérico que entrou no cálculo */
   original_value: number | null;
   unit: string | null;
+  /** Nível de atendimento do Quadro 23 (baixo, moderado, alto, completo…) */
   category: string | null;
+  /** Condição da evidência que justifica o nível, também do Quadro 23 */
+  category_condition: string | null;
   /** Síntese da evidência produzida pela LLM */
   summary: string | null;
   /** Por que a evidência foi recusada na validação, quando foi */

@@ -67,27 +67,63 @@
   },
 
   "default_rubrics": {
-    "_todo": "TODO ACADÊMICO 02 — as categorias de cada indicador qualitativo.",
-    "status": "provisional",
+    "_decisao": "TODO ACADÊMICO 02 — resolvido: as rubricas são o Quadro 23 da dissertação.",
+    "status": "decided",
     "_nota": [
-      "A diretriz manda implementar o mecanismo configurável e NÃO inventar as",
-      "rubricas definitivas. Estas são formas padrão, referenciadas por nome nos",
-      "indicadores; os nomes das categorias é que precisam de decisão acadêmica."
+      "`nivel_atendimento` reproduz o Quadro 23 (Regras determinísticas de",
+      "avaliação qualitativa): os nomes dos níveis, as condições da evidência e os",
+      "valores são os da dissertação, não formas padrão inventadas aqui.",
+      "",
+      "`nao_identificado` tem valor NULO, não zero. O Quadro 23 registra '—' nessa",
+      "linha, e o texto logo abaixo dele é explícito: 'O nível Não identificado não",
+      "recebe valor igual a zero, uma vez que a ausência de evidência não é",
+      "interpretada como desempenho inferior do provedor. Nessa situação, aplica-se",
+      "o procedimento definido na Seção 4.4.1.3 para informações ausentes.' Um",
+      "valor nulo faz o indicador sair do conjunto comparável, que é exatamente",
+      "esse procedimento.",
+      "",
+      "`condition` é a coluna 'Condição da evidência' do quadro. Ela não entra em",
+      "cálculo nenhum: vai para o prompt de extração, para que a LLM classifique",
+      "pela regra da pesquisa em vez de por um rótulo solto."
     ],
-    "binary": {
+    "binario": {
+      "_nota": [
+        "Quadro 23, parágrafo final: 'Para indicadores cuja natureza permita apenas",
+        "verificar a existência de uma condição objetiva, a regra determinística de",
+        "avaliação pode assumir caráter binário, atribuindo valor 1,00 quando a",
+        "evidência estiver documentalmente comprovada e 0,00 quando houver",
+        "evidência explícita de não atendimento.'",
+        "",
+        "Note a assimetria: 0,00 exige evidência EXPLÍCITA de não atendimento. A",
+        "simples falta de menção é 'nao_identificado', não zero."
+      ],
       "mode": "binary",
       "categories": {
-        "verified": 1.0,
-        "not_verified": 0.0
+        "nao_identificado": null,
+        "nao_atendido": 0.0,
+        "comprovado": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "nao_atendido": "Há evidência explícita de que a condição não é atendida",
+        "comprovado": "A condição está documentalmente comprovada"
       }
     },
-    "ordinal_4": {
+    "nivel_atendimento": {
       "mode": "ordinal",
       "categories": {
-        "level_1": 0.25,
-        "level_2": 0.50,
-        "level_3": 0.75,
-        "level_4": 1.00
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.50,
+        "alto": 0.75,
+        "completo": 1.00
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Evidência limitada, indicando atendimento parcial inicial ao indicador",
+        "moderado": "Evidência demonstra atendimento parcial ao indicador",
+        "alto": "Evidência demonstra atendimento substancial ao indicador",
+        "completo": "Evidência demonstra atendimento integral às condições previstas para o indicador"
       }
     }
   },

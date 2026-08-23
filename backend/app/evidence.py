@@ -271,9 +271,14 @@ def describe_indicators(indicators: Sequence[IndicatorConfig]) -> str:
             if indicator.expected_units:
                 partes.append(f"  unidades esperadas: {', '.join(indicator.expected_units)}")
         else:
-            categorias = ", ".join(indicator.rubric.allowed_categories) if indicator.rubric else ""
             partes.append("  tipo: qualitativo — preencha `category`, deixe `value` e `unit` nulos")
-            partes.append(f"  categorias permitidas: {categorias}")
+            partes.append("  categorias permitidas (escolha pela condição da evidência):")
+            rubrica = indicator.rubric
+            for categoria in rubrica.allowed_categories if rubrica else ():
+                condicao = rubrica.condition_for(categoria) if rubrica else None
+                partes.append(
+                    f"    - {categoria}: {condicao}" if condicao else f"    - {categoria}"
+                )
         termos = [t for t in indicator.search_terms[:MAX_PROMPT_TERMS] if t and t.strip()]
         if termos:
             partes.append(f"  termos relacionados: {', '.join(termos)}")

@@ -139,12 +139,12 @@ def test_categoria_qualitativa_e_convertida_pela_rubrica(certificacoes, metodolo
         nature="qualitative",
         value=None,
         unit=None,
-        category="level_3",
+        category="alto",
     )
     finding = _validar(bruto, certificacoes, metodologia)
     assert finding.status == STATUS_FOUND
-    assert finding.value == pytest.approx(0.75)  # ordinal_4 → level_3
-    assert finding.category == "level_3"
+    assert finding.value == pytest.approx(0.75)  # Quadro 23: "alto" → 0,75
+    assert finding.category == "alto"
 
 
 def test_categoria_fora_da_rubrica_e_recusada(certificacoes, metodologia):
@@ -460,7 +460,7 @@ def test_sem_trecho_recuperado_a_llm_nao_e_chamada(monkeypatch, metodologia, dis
 
 def test_prompt_lista_as_categorias_permitidas(certificacoes, disponibilidade):
     texto = evidence.describe_indicators([certificacoes, disponibilidade])
-    assert "categorias permitidas: level_1, level_2, level_3, level_4" in texto
+    assert "nao_identificado" in texto and "baixo" in texto and "completo" in texto
     assert "quantitativo" in texto and "qualitativo" in texto
 
 
@@ -477,7 +477,7 @@ def test_prompt_leva_os_termos_do_quadro_27(disponibilidade):
 def test_prompt_de_extracao_esta_registrado():
     from llm.prompts import registered_versions
 
-    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "2"
+    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "3"
 
 
 # Instruções operacionais do Quadro 26, na ordem das linhas do quadro. O texto é
@@ -585,11 +585,11 @@ def test_caracteristica_extraida_acompanha_a_categoria(certificacoes, metodologi
         nature="qualitative",
         value=None,
         unit=None,
-        category="level_4",
+        category="completo",
         extracted_value="ISO/IEC 27001, ISO/IEC 27017 e SOC 2",
     )
     finding = _validar(bruto, certificacoes, metodologia)
-    assert finding.category == "level_4"
+    assert finding.category == "completo"
     assert finding.value == pytest.approx(1.0)
     assert finding.extracted_value == "ISO/IEC 27001, ISO/IEC 27017 e SOC 2"
     # E chega ao domínio como procedência do valor, não como valor.
