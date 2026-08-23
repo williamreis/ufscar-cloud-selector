@@ -398,6 +398,12 @@ Três validações decidem o que sobrevive (§19):
   `chunk_id` entregues na chamada. Identificador inventado vira `INVALID`;
 - **categoria na allowlist** — categoria fora da rubrica vira `INVALID`, não uma
   nota aproximada. A conversão em número é sempre da rubrica;
+- **unidade esperada** — a unidade informada tem de estar entre as
+  `expected_units` do indicador. É validação de formato (§5.4), e o caso que a
+  motiva é o CUE: o Quadro 22 o define como razão (emissão ÷ energia dos
+  equipamentos), e um total absoluto em `tCO2e` passaria pela normalização por
+  minimização fazendo o provedor **maior** perder por ser maior;
+
 - **unidade comparável** — se dois provedores publicam o mesmo indicador em
   unidades diferentes ("90 %" e "0,9 ratio"), o indicador inteiro sai da
   comparação, para todas as alternativas.

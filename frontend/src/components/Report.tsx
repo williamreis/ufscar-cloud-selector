@@ -24,6 +24,7 @@ import {
 } from "recharts";
 import EvidenceCard from "./EvidenceCard";
 import AhpAudit from "./AhpAudit";
+import IndicatorWeights from "./IndicatorWeights";
 import SynthesisAudit from "./SynthesisAudit";
 
 const CRITERIA_LABELS: Record<string, string> = {
@@ -82,6 +83,7 @@ export default function Report({
     evidences,
     ahp,
     synthesis,
+    indicator_weights: indicatorWeights,
     coverage,
     submission_id: submissionId,
   } = result;
@@ -342,6 +344,12 @@ export default function Report({
           </div>
         </section>
       </div>
+
+      {indicatorWeights && (
+        <div className="mb-10">
+          <IndicatorWeights weights={indicatorWeights} criteriaWeights={cw} />
+        </div>
+      )}
 
       <section className="mb-10">
         <SectionTitle
