@@ -107,9 +107,12 @@ O cálculo é determinístico e auditável, em três etapas:
    preliminar)", o bloco de consistência explica a contradição e oferece
    **Revisar comparações**, que volta ao bloco D com as respostas preservadas (o
    rascunho do questionário vive em `sessionStorage`).
-3. **Síntese das alternativas** — modo distributivo: as notas de referência de
-   cada provedor são normalizadas dentro de cada critério e agregadas pelos pesos.
-   As prioridades finais somam 1 entre os provedores.
+3. **Síntese das alternativas** — soma ponderada (Equação 5 da dissertação):
+   `S_i = Σ_{j∈V} w'_j × r_ij`. O desempenho `r_ij` vem da extração documental,
+   normalizado por benefício ou minimização; o peso `w'_j` é o peso global do
+   indicador renormalizado sobre o conjunto comparável. Cada score fica em [0,1]
+   e é a soma das suas próprias contribuições — não há fator de cobertura, nem
+   nota de reserva para provedor sem evidência.
 
 O relatório também traz um bloco recolhível com **as respostas do questionário**
 que o geraram — as 25 perguntas na ordem, com o que foi marcado e com as
@@ -122,9 +125,14 @@ resultados, em dois campos:
 
 - `ahp` — julgamentos com a alternativa escolhida, matriz, autovetor, λmax, IC e
   RC: rastreia cada **peso** até a resposta que o gerou;
-- `synthesis` — para cada par (provedor × critério), a nota bruta, o denominador
-  da normalização, a normalizada, o peso e a contribuição, mais a soma que fecha
-  em 1: rastreia cada **score final** até a aritmética que o produziu.
+- `synthesis` — para cada par (provedor × indicador), o valor publicado no
+  documento, a unidade ou categoria, o estado da evidência, a fonte, o valor
+  normalizado, o peso efetivo e a contribuição; e, por dimensão, a contribuição
+  agregada. Rastreia cada **score final** até a aritmética que o produziu e, dali,
+  até o trecho de documento que o sustenta;
+- `indicator_weights` — os quatro níveis de peso de cada indicador (coeficiente
+  de relevância, local, global e efetivo), com o motivo de exclusão quando o
+  indicador ficou fora do conjunto comparável.
 
 ### 4. Geração com Recuperação de Contexto (RAG)
 
@@ -240,14 +248,37 @@ de erro de ponto flutuante. Por isso o método escolhido é gravado em cada
 avaliação. A matriz normalizada também é persistida (§32.2): é o passo que
 permite refazer a conta dos pesos à mão.
 
-### O que ainda não tem fonte
+### De onde vem o desempenho dos provedores
 
-O motor de desempenho por indicador — normalização benefício/minimização,
-conjunto comparável `V`, renormalização e agregação — está implementado e
-testado, mas **não tem de onde tirar valores**: a extração de evidência é a Fase
-2. Até lá o ranking continua saindo da síntese por dimensão, e a resposta declara
-isso em `indicator_weights.performance_source`. Nenhum valor por indicador é
-inventado para preencher a lacuna.
+`evidence.py` é o elo entre o RAG e o motor determinístico:
+
+    indicador → consulta RAG → trechos → LLM (Quadro 26) → validação →
+    PerformanceInput → normalização (§9) → agregação (§12)
+
+A consulta é montada **por indicador**, a partir do campo `search_terms` de
+`indicators.json` (o Quadro 27 em forma de dado). A interpretação é uma chamada
+por (provedor × dimensão), com a lista fechada de indicadores daquela dimensão e
+as categorias permitidas de cada rubrica — o modelo devolve valor publicado ou
+categoria, nunca nota.
+
+Três validações decidem o que sobrevive (§19):
+
+- **fonte verificável** — a `source_chunk_id` citada precisa estar entre os
+  `chunk_id` entregues na chamada. Identificador inventado vira `INVALID`;
+- **categoria na allowlist** — categoria fora da rubrica vira `INVALID`, não uma
+  nota aproximada. A conversão em número é sempre da rubrica;
+- **unidade comparável** — se dois provedores publicam o mesmo indicador em
+  unidades diferentes ("90 %" e "0,9 ratio"), o indicador inteiro sai da
+  comparação, para todas as alternativas.
+
+Falha da LLM, indicador omitido da resposta e ausência de trecho recuperado
+levam todos ao mesmo lugar: `NOT_FOUND` com o motivo registrado. Nenhum valor é
+inventado para preencher a lacuna, e `indicator_weights.performance_source`
+declara a procedência (`evidence_extraction`).
+
+Não há mais notas fixas no código. O antigo dicionário `scores` de
+`providers_data.py`, que era a fonte real do ranking antes desta mudança, foi
+removido — o arquivo agora só liga documento a provedor pelo nome do arquivo.
 
 ### Versionamento (§28)
 
@@ -427,7 +458,8 @@ docker run --rm -v "$PWD/backend:/app" -w /app ufscar-cloud-selector-backend pyt
 | `test_ahp_reference.py` | **fixture obrigatória da §6.5** (1/5/7/3 → 0.724/0.193/0.083, λmax 3.066, CI 0.033, CR 0.057), divergência entre métodos, matriz circular |
 | `test_domain_weights.py` | coeficientes, "não sei" ≠ 0, somas locais/globais = 1, dimensão sem resposta pede revisão, mudança de escala por config, validação da configuração |
 | `test_domain_normalization.py` | benefício e minimização, divisão indefinida, rubrica, conjunto `V` comum, `NOT_FOUND` ≠ 0, renormalização, contribuições, empate |
-| `test_recommend_pipeline.py` | integração do endpoint: guardrails no fluxo, pesos de indicador, versões, estado, limitações, gravação da auditoria |
+| `test_evidence_extraction.py` | consulta por indicador, validação da saída da LLM (fonte inventada, categoria fora da rubrica, quantitativo sem valor), unidades divergentes, omissão e indisponibilidade → `NOT_FOUND`, evidência → ranking ponta a ponta |
+| `test_recommend_pipeline.py` | integração do endpoint: guardrails no fluxo, ranking vindo das evidências, RAG por indicador, isolamento do prompt de extração, pesos de indicador, versões, estado, limitações, gravação da auditoria |
 
 ## API Endpoint
 

@@ -10,7 +10,7 @@ from rag.index import (
 )
 from rag.ingest import detect_provider_id, ingest_paths, load_and_chunk
 from rag.metadata import SCOPE_GLOBAL, evaluation_scope
-from rag.queries import DIMENSION_QUERIES, query_for
+from rag.queries import DIMENSION_QUERIES, query_for, query_for_indicator
 from rag.retrieval import format_hit, search
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "load",
     "load_and_chunk",
     "query_for",
+    "query_for_indicator",
     "save",
     "search",
 ]
