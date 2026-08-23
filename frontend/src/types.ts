@@ -135,7 +135,9 @@ export interface SynthesisIndicator {
   direction: "benefit" | "minimize" | null;
   status: EvidenceStatus;
   nature: string | null;
-  /** Valor como publicado no documento (quantitativo) ou pela rubrica */
+  /** "o valor ou característica extraída" (§5.4), como o documento a apresenta */
+  extracted_value: string | null;
+  /** Valor numérico que entrou no cálculo */
   original_value: number | null;
   unit: string | null;
   category: string | null;

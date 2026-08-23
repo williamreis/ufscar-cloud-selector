@@ -464,7 +464,133 @@ def test_prompt_lista_as_categorias_permitidas(certificacoes, disponibilidade):
     assert "quantitativo" in texto and "qualitativo" in texto
 
 
+def test_prompt_leva_os_termos_do_quadro_27(disponibilidade):
+    """
+    §5.2: os termos são "elementos orientadores na construção das consultas e na
+    recuperação das evidências documentais" — as duas metades da frase.
+    """
+    texto = evidence.describe_indicators([disponibilidade])
+    assert "termos relacionados:" in texto
+    assert "uptime" in texto
+
+
 def test_prompt_de_extracao_esta_registrado():
     from llm.prompts import registered_versions
 
-    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "1"
+    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "2"
+
+
+# Instruções operacionais do Quadro 26, na ordem das linhas do quadro. O texto é
+# o da dissertação; o teste falha se uma edição do prompt derrubar qualquer uma.
+QUADRO_26 = [
+    (
+        "Papel do modelo",
+        "Você é um assistente de apoio à decisão para seleção de provedores de "
+        "Cloud Computing.",
+    ),
+    (
+        "Escopo da análise",
+        "Analise as evidências documentais exclusivamente em relação aos "
+        "indicadores previamente definidos nesta pesquisa, organizados nas "
+        "dimensões de sustentabilidade, segurança e desempenho operacional.",
+    ),
+    (
+        "Uso das evidências",
+        "Utilize apenas as evidências documentais recuperadas pelo mecanismo RAG",
+    ),
+    (
+        "Extração estruturada",
+        "Identifique e extraia o valor, característica, prática ou evidência "
+        "explicitamente apresentada nos documentos para o indicador analisado, "
+        "sem atribuir pontuação à alternativa.",
+    ),
+    (
+        "Fonte da informação",
+        "Utilize os documentos recuperados que sustentam a análise realizada",
+    ),
+    (
+        "Síntese contextual",
+        "uma síntese da evidência identificada, relacionando-a ao indicador "
+        "correspondente e evitando interpretações que não estejam sustentadas "
+        "pelos documentos recuperados.",
+    ),
+    (
+        "Qualidade da evidência",
+        "se a evidência recuperada é quantitativa",
+    ),
+    (
+        "Qualidade da evidência (não é nota)",
+        "sem utilizar essa classificação como pontuação da alternativa.",
+    ),
+    (
+        "Restrição metodológica",
+        "Não gere novos indicadores e não atribua pontuação quando não houver "
+        "evidência documental suficiente.",
+    ),
+    (
+        "Ausência de evidência",
+        "não identificado nas fontes recuperadas",
+    ),
+]
+
+
+@pytest.mark.parametrize("componente,instrucao", QUADRO_26, ids=[c for c, _ in QUADRO_26])
+def test_prompt_reproduz_o_quadro_26(componente, instrucao):
+    """Cada linha do Quadro 26 aparece no prompt principal (§5.2)."""
+    from llm.prompts import get as get_prompt
+
+    system = " ".join(get_prompt("PROMPT_EVIDENCE_EXTRACTION_V1").system.split())
+    assert " ".join(instrucao.split()) in system, f"Quadro 26 → {componente} não está no prompt"
+
+
+def test_prompt_declara_as_secoes_do_quadro_26():
+    """As seções nomeadas tornam a conferência com o quadro direta."""
+    from llm.prompts import get as get_prompt
+
+    system = get_prompt("PROMPT_EVIDENCE_EXTRACTION_V1").system
+    for secao in (
+        "ESCOPO DA ANÁLISE",
+        "USO DAS EVIDÊNCIAS",
+        "EXTRAÇÃO ESTRUTURADA",
+        "FONTE DA INFORMAÇÃO",
+        "SÍNTESE CONTEXTUAL",
+        "QUALIDADE DA EVIDÊNCIA",
+        "RESTRIÇÃO METODOLÓGICA",
+        "AUSÊNCIA DE EVIDÊNCIA",
+    ):
+        assert secao in system
+
+
+def test_schema_tem_os_campos_que_a_secao_5_4_exige():
+    """
+    §5.4: indicador analisado, evidência identificada, natureza, valor ou
+    característica extraída e referência à fonte documental.
+    """
+    from llm.schemas import IndicatorEvidence as Schema
+
+    campos = set(Schema.model_fields)
+    assert {"indicator_id", "summary", "nature", "extracted_value", "source_document"} <= campos
+    # E nenhum campo onde caiba uma nota.
+    assert not campos & {"score", "rating", "weight", "rank", "peso", "nota"}
+
+
+def test_caracteristica_extraida_acompanha_a_categoria(certificacoes, metodologia):
+    """
+    O Quadro 26 manda extrair "o valor, característica, prática ou evidência".
+    Nem tudo o que um documento apresenta cabe num número — a característica
+    fica ao lado da categoria, para que a classificação seja conferível.
+    """
+    bruto = _bruto(
+        indicator_id="security_certifications",
+        nature="qualitative",
+        value=None,
+        unit=None,
+        category="level_4",
+        extracted_value="ISO/IEC 27001, ISO/IEC 27017 e SOC 2",
+    )
+    finding = _validar(bruto, certificacoes, metodologia)
+    assert finding.category == "level_4"
+    assert finding.value == pytest.approx(1.0)
+    assert finding.extracted_value == "ISO/IEC 27001, ISO/IEC 27017 e SOC 2"
+    # E chega ao domínio como procedência do valor, não como valor.
+    assert finding.to_performance().raw_value == "ISO/IEC 27001, ISO/IEC 27017 e SOC 2"

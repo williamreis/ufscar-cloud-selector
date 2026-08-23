@@ -57,14 +57,35 @@ class IndicatorEvidence(BaseModel):
     """
     Evidência documental encontrada para **um** indicador de **um** provedor.
 
-    Os campos reproduzem as linhas do Quadro 26: indicador analisado, evidência
-    identificada, natureza da evidência, valor ou característica extraída e
-    referência à fonte documental utilizada.
+    Os campos são exatamente os que a §5.4 enumera como obrigatórios na saída:
+
+        indicador analisado                     → indicator_id
+        evidência identificada                  → summary
+        natureza quantitativa ou qualitativa    → nature
+        valor ou característica extraída        → extracted_value (+ value/unit
+                                                   ou category, na forma que o
+                                                   cálculo consome)
+        referência à fonte documental           → source_chunk_id, source_document
+
+    `extracted_value` e `value`/`category` coexistem de propósito. O Quadro 26
+    manda extrair "o valor, característica, prática ou evidência explicitamente
+    apresentada", e nem tudo o que um documento apresenta cabe num número: "ISO
+    27001, ISO 27017 e SOC 2" é a característica extraída, e a categoria da
+    rubrica é a leitura dela. Guardar as duas mantém o que o documento diz ao
+    lado do que o modelo classificou, que é o que torna a classificação
+    conferível.
     """
 
     indicator_id: str = Field(description="Id do indicador analisado, exatamente como fornecido.")
     evidence_status: Literal["FOUND", "PARTIAL", "NOT_FOUND"]
     nature: Literal["quantitative", "qualitative", "insufficient"]
+
+    # "o valor ou característica extraída quando aplicável" (§5.4), na forma como
+    # o documento a apresenta. É texto: não entra em conta nenhuma.
+    extracted_value: Optional[str] = Field(
+        default=None,
+        description="Valor, característica ou prática extraída, como aparece no documento.",
+    )
 
     # Preenchido só quando o indicador é quantitativo e o documento traz o valor.
     value: Optional[float] = Field(
@@ -95,7 +116,10 @@ class IndicatorEvidence(BaseModel):
             return None
         return raw
 
-    @field_validator("category", "unit", "source_chunk_id", "source_document", mode="before")
+    @field_validator(
+        "category", "unit", "extracted_value", "source_chunk_id", "source_document",
+        mode="before",
+    )
     @classmethod
     def _blank_is_none(cls, raw: object) -> object:
         if isinstance(raw, str) and not raw.strip():
