@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { SynthesisResult } from "../types";
+import type { SynthesisIndicator, SynthesisResult } from "../types";
 
 const LABELS: Record<string, string> = {
   sustainability: "Sustentabilidade",
@@ -7,21 +7,47 @@ const LABELS: Record<string, string> = {
   security: "Segurança",
 };
 
+const EXCLUSION_REASONS: Record<string, string> = {
+  no_evidence: "nenhum provedor tem evidência",
+  missing_for_some_providers: "falta evidência em algum provedor",
+  non_discriminative: "todos os valores iguais a zero",
+  invalid_for_comparison: "valores incompatíveis com a fórmula",
+  no_weight: "sem peso (relevância não informada)",
+};
+
 const f3 = (n: number) => n.toFixed(3);
 const f4 = (n: number) => n.toFixed(4);
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
+/** Valor como o documento o publicou, com unidade ou categoria. */
+function publishedValue(row: SynthesisIndicator): string {
+  if (row.category) return row.category;
+  if (row.original_value === null) return "—";
+  return row.unit ? `${row.original_value} ${row.unit}` : String(row.original_value);
+}
+
 /**
- * Memória de cálculo do score final (síntese das alternativas, modo distributivo).
+ * Memória de cálculo do score final (Equação 5).
  *
- * Mostra a aritmética inteira célula a célula — nota bruta → normalizada dentro do
- * critério → multiplicada pelo peso → somada — de modo que qualquer linha da
- * tabela de ranking possa ser refeita à mão a partir do relatório.
+ * Mostra a cadeia inteira de cada indicador — valor publicado no documento →
+ * normalizado pela Equação 1 ou 2 → multiplicado pelo peso efetivo → somado —
+ * de modo que qualquer linha do ranking possa ser refeita à mão a partir do
+ * relatório e conferida contra o PDF de origem.
+ *
+ * Os indicadores que ficaram fora da conta aparecem com o motivo, e não com
+ * zero: a §11 é explícita em que ausência de evidência não é desempenho nulo.
  */
 export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResult }) {
   const [open, setOpen] = useState(false);
-  const { criteria_order: criteria, weights, column_totals: totals, providers } = synthesis;
+  const {
+    criteria_order: criteria,
+    dimension_weights: dimWeights,
+    providers,
+    valid_indicators: valid,
+    excluded_indicators: excluded,
+  } = synthesis;
   const top = providers[0];
+  const excludedList = Object.entries(excluded);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -35,8 +61,9 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
         <div className="min-w-[16rem] flex-1">
           <h3 className="font-bold text-slate-900">Como o score final foi calculado</h3>
           <p className="mt-0.5 text-sm text-slate-500">
-            score = Σ (peso do critério × nota normalizada). As prioridades somam 1 entre os
-            provedores, por isso ficam próximas de 1/{providers.length}.
+            score = Σ (peso do indicador × desempenho normalizado), sobre os{" "}
+            {valid.length} indicador{valid.length === 1 ? "" : "es"} com evidência comparável em
+            todos os provedores.
           </p>
         </div>
         <button
@@ -52,27 +79,58 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
       {open && (
         <div className="space-y-5 border-t border-slate-100 bg-slate-50/60 p-5">
           <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <h4 className="mb-2 text-sm font-semibold text-slate-800">As duas etapas</h4>
+            <h4 className="mb-2 text-sm font-semibold text-slate-800">As quatro etapas</h4>
             <ol className="space-y-2 text-sm leading-relaxed text-slate-600">
               <li>
-                <strong className="text-slate-800">1. Normalização por critério.</strong> A nota do
-                provedor é dividida pela soma das notas de todos os provedores naquele critério,
-                para que as notas virem proporções comparáveis entre si (somam 1 por critério).
+                <strong className="text-slate-800">1. Evidência.</strong> Cada indicador tem uma
+                consulta própria à base documental. O trecho recuperado é interpretado e o valor
+                publicado — ou a categoria da rubrica — é extraído com a fonte anexada.
               </li>
               <li>
-                <strong className="text-slate-800">2. Agregação ponderada.</strong> Cada proporção é
-                multiplicada pelo peso do critério — o peso vem do autovetor da matriz par a par do
-                seu questionário — e as três parcelas são somadas.
+                <strong className="text-slate-800">2. Normalização.</strong> Para indicadores em
+                que maior é melhor, valor ÷ maior valor entre os provedores. Para os de
+                minimização (latência, PUE), menor valor ÷ valor. Os dois deixam o resultado
+                entre 0 e 1.
+              </li>
+              <li>
+                <strong className="text-slate-800">3. Peso efetivo.</strong> Peso da dimensão (do
+                AHP) × peso local do indicador (da sua resposta de relevância), renormalizado
+                sobre os indicadores que sobraram — a soma volta a 1.
+              </li>
+              <li>
+                <strong className="text-slate-800">4. Agregação.</strong> Cada desempenho
+                normalizado é multiplicado pelo seu peso efetivo, e as parcelas são somadas.
               </li>
             </ol>
           </div>
 
+          {excludedList.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <h4 className="mb-2 text-sm font-semibold text-amber-900">
+                Fora da conta ({excludedList.length})
+              </h4>
+              <p className="mb-2 text-sm leading-relaxed text-amber-900">
+                Estes indicadores não entraram no cálculo. Nenhum provedor foi penalizado por
+                isso: o indicador sai para <em>todos</em>, e os pesos dos que ficaram são
+                redistribuídos.
+              </p>
+              <ul className="space-y-1 text-sm text-amber-900">
+                {excludedList.map(([id, reason]) => (
+                  <li key={id}>
+                    <code className="rounded bg-amber-100 px-1 text-[12px]">{id}</code> —{" "}
+                    {EXCLUSION_REASONS[reason] || reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           <div>
             <h4 className="mb-2 text-sm font-semibold text-slate-800">
-              Conta completa, provedor por provedor
+              Contribuição por dimensão
             </h4>
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
-              <table className="w-full min-w-[46rem] text-sm">
+              <table className="w-full min-w-[40rem] text-sm">
                 <thead className="bg-slate-50 text-slate-500">
                   <tr>
                     <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide">
@@ -84,7 +142,7 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
                           {LABELS[c] || c}
                         </span>
                         <span className="block text-[11px] font-normal text-slate-400">
-                          peso {pct(weights[c])} · Σ notas {f3(totals[c])}
+                          peso {pct(dimWeights[c] ?? 0)}
                         </span>
                       </th>
                     ))}
@@ -99,13 +157,16 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
                       <td className="px-3 py-2.5 font-medium text-slate-800">{p.name}</td>
                       {criteria.map((c) => {
                         const cell = p.cells[c];
+                        if (!cell) return <td key={c} className="px-3 py-2.5 text-slate-400">—</td>;
                         return (
                           <td key={c} className="px-3 py-2.5">
                             <span className="block text-[11px] text-slate-400">
-                              {f3(cell.raw)} ÷ {f3(totals[c])} = {f4(cell.normalized)}
+                              {cell.performance === undefined
+                                ? "sem evidência comparável"
+                                : `desempenho ${f3(cell.performance)}`}
                             </span>
                             <span className="block text-slate-700">
-                              × {f4(cell.weight)} ={" "}
+                              contribui{" "}
                               <strong className="text-slate-900">{f4(cell.contribution)}</strong>
                             </span>
                           </td>
@@ -119,11 +180,12 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-slate-200 bg-slate-50 text-xs text-slate-500">
-                    <td className="px-3 py-2" colSpan={criteria.length + 1}>
-                      Verificação: as prioridades do modo distributivo somam 1
-                    </td>
-                    <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">
-                      {f3(synthesis.score_total)}
+                    <td className="px-3 py-2" colSpan={criteria.length + 2}>
+                      Verificação: os pesos dos indicadores válidos somam{" "}
+                      <strong className="tabular-nums text-slate-700">
+                        {f3(synthesis.effective_weight_sum)}
+                      </strong>
+                      {synthesis.has_ties && " · há empate no ranking"}
                     </td>
                   </tr>
                 </tfoot>
@@ -132,25 +194,94 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
           </div>
 
           {top && (
-            <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <div>
               <h4 className="mb-2 text-sm font-semibold text-slate-800">
-                Refazendo a conta de {top.name}
+                Indicador a indicador — {top.name}
               </h4>
-              <p className="font-mono text-xs leading-relaxed text-slate-600">
-                {criteria
-                  .map((c) => `${f4(top.cells[c].weight)} × ${f4(top.cells[c].normalized)}`)
-                  .join("  +  ")}{" "}
-                = <strong className="text-slate-900">{f3(top.score)}</strong>
-              </p>
+              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                <table className="w-full min-w-[52rem] text-sm">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      {[
+                        "Indicador",
+                        "Evidência",
+                        "Valor publicado",
+                        "Normalizado",
+                        "Peso",
+                        "Contribuição",
+                      ].map((h) => (
+                        <th
+                          key={h}
+                          className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="tabular-nums">
+                    {top.indicators.map((row) => (
+                      <tr
+                        key={row.indicator_id}
+                        className={`border-t border-slate-100 align-top ${
+                          row.in_comparison ? "" : "bg-slate-50/70 text-slate-400"
+                        }`}
+                      >
+                        <td className="px-3 py-2.5">
+                          <span className="block font-medium text-slate-800">{row.name}</span>
+                          <span className="block text-[11px] text-slate-400">
+                            {LABELS[row.dimension] || row.dimension} ·{" "}
+                            {row.direction === "minimize" ? "menor é melhor" : "maior é melhor"}
+                          </span>
+                        </td>
+                        <td className="max-w-[18rem] px-3 py-2.5">
+                          <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                            {row.status}
+                          </span>
+                          <span className="block text-[12px] leading-snug text-slate-600">
+                            {row.rejection || row.summary || "—"}
+                          </span>
+                          {row.source_document && (
+                            <span className="block text-[11px] text-slate-400">
+                              fonte: {row.source_document}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-700">{publishedValue(row)}</td>
+                        <td className="px-3 py-2.5">
+                          {row.normalized_value === null ? "—" : f4(row.normalized_value)}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {row.effective_weight === null ? "—" : f4(row.effective_weight)}
+                        </td>
+                        <td className="px-3 py-2.5 font-semibold text-slate-900">
+                          {row.contribution === null ? "—" : f4(row.contribution)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-slate-200 bg-slate-50 text-xs text-slate-500">
+                      <td className="px-3 py-2" colSpan={5}>
+                        Soma das contribuições = score final de {top.name}
+                      </td>
+                      <td className="px-3 py-2 font-semibold tabular-nums text-slate-700">
+                        {f3(top.score)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
             </div>
           )}
 
           <p className="border-t border-slate-200 pt-3 text-xs leading-relaxed text-slate-500">
-            <strong>De onde vem cada número:</strong> os <em>pesos</em> vêm exclusivamente das suas
-            comparações par-a-par (perguntas 17–19), pelo autovetor da matriz de Saaty. As{" "}
-            <em>notas</em> dos provedores vêm da base de referência do sistema — não das suas
-            respostas nem dos documentos indexados, que alimentam apenas a seção de evidências.
-            Trocando os pesos, muda o score; trocando as notas, muda a ordem.
+            <strong>De onde vem cada número:</strong> os <em>pesos das dimensões</em> vêm das suas
+            comparações par-a-par (perguntas 17–19), pelo método AHP. Os <em>pesos locais</em> vêm
+            das suas respostas de relevância (perguntas 1–15). Os <em>valores publicados</em> vêm
+            dos documentos indexados, extraídos indicador a indicador com a fonte anexada. A
+            normalização e a soma são determinísticas — o modelo de linguagem lê o documento, mas
+            não atribui nota, peso nem posição.
           </p>
         </div>
       )}
