@@ -98,15 +98,33 @@ O cálculo é determinístico e auditável, em três etapas:
    D em duas etapas"), e o recíproco preenche o par inverso. Com três dimensões,
    os três julgamentos preenchem a matriz inteira. Pares não respondidos ficam em
    1 (indiferença) e são listados em `ahp.missing_judgments`.
-2. **Prioridades dos critérios** — autovetor principal da matriz (método das
-   potências), acompanhado de λmax, do índice de consistência (IC) e da
-   **razão de consistência (RC = IC / IR)**, comparada ao limite de 0,10 de Saaty.
-   Como os julgamentos são do próprio gestor, o RC mede a coerência real das
-   respostas dele. Com **RC > 0,10** o relatório para de apresentar um provedor
-   como recomendação: o topo do ranking passa a "1º lugar (resultado
-   preliminar)", o bloco de consistência explica a contradição e oferece
-   **Revisar comparações**, que volta ao bloco D com as respostas preservadas (o
-   rascunho do questionário vive em `sessionStorage`).
+2. **Prioridades dos critérios** — vetor de prioridades da matriz, acompanhado de
+   λmax, do índice de consistência (IC) e da **razão de consistência
+   (RC = IC / IR)**, comparada ao limite de 0,10 de Saaty. Como os julgamentos são
+   do próprio gestor, o RC mede a coerência real das respostas dele.
+
+   **Com RC > 0,10 a avaliação não prossegue.** A §4.2.3 é explícita: "Caso o
+   valor de CR seja superior a 0,10, o sistema informa ao usuário a existência de
+   inconsistência nos julgamentos e solicita a revisão das comparações antes do
+   prosseguimento do processo de avaliação". O endpoint devolve **409** com
+   `AHP_INCONSISTENT_JUDGMENTS`, e a verificação fica logo depois do cálculo dos
+   pesos — antes de qualquer chamada à LLM. Julgamentos que se contradizem não
+   devem produzir ranking, e pagar a extração documental sobre eles seria gastar
+   caro por um resultado que o próprio método declara não utilizável.
+
+   O 409 carrega o que a tela precisa para *solicitar a revisão* em vez de só
+   recusar: RC, limite, as três perguntas do bloco D e o **par cujo julgamento
+   mais destoa** (`worst_pair`). O diagnóstico é o clássico de Saaty — numa matriz
+   consistente vale `a_ij = w_i/w_j`, e o pior par é o de maior desvio logarítmico
+   dessa razão. Ele aponta; não corrige. O questionário mostra o painel de revisão
+   com atalho para cada comparação, e as respostas ficam onde estão (o rascunho
+   vive em `sessionStorage`).
+
+   Duas consequências para quem lê o histórico: envios com RC acima do limite
+   **não são mais gravados** — sem resultado produzido não há avaliação a
+   registrar —, então `is_consistent = false` no banco só aparece em registros
+   anteriores a esta regra. O relatório mantém o modo "resultado preliminar" para
+   reexibir esses envios antigos na área de gestão.
 3. **Síntese das alternativas** — soma ponderada (Equação 5 da dissertação):
    `S_i = Σ_{j∈V} w'_j × r_ij`. O desempenho `r_ij` vem da extração documental,
    normalizado por benefício ou minimização; o peso `w'_j` é o peso global do
@@ -497,6 +515,7 @@ docker run --rm -v "$PWD/backend:/app" -w /app ufscar-cloud-selector-backend pyt
 | `test_versioning.py` | hash canônico do questionário, insensível a formatação e sensível a conteúdo, ausência do arquivo |
 | `test_rag_metadata.py` | ids determinísticos, ano lido do nome, página em base 0 vs humana, isolamento de escopo |
 | `test_db_migration.py` | esquema antigo → migração aditiva, envios preservados, blocos de auditoria novos |
+| `test_ahp_matrix.py` (porta) + `test_recommend_pipeline.py` | RC > 0,10 devolve 409 antes de qualquer chamada à LLM, aponta as comparações e o pior par, não grava o envio, e a correção recupera a avaliação |
 | `test_ahp_reference.py` | **fixture obrigatória da §6.5** (1/5/7/3 → 0.724/0.193/0.083, λmax 3.066, CI 0.033, CR 0.057), divergência entre métodos, matriz circular |
 | `test_domain_weights.py` | coeficientes, "não sei" ≠ 0, somas locais/globais = 1, dimensão sem resposta pede revisão, mudança de escala por config, validação da configuração |
 | `test_domain_normalization.py` | benefício e minimização, divisão indefinida, rubrica, conjunto `V` comum, `NOT_FOUND` ≠ 0, renormalização, contribuições, empate |

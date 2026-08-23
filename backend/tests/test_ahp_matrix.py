@@ -239,3 +239,46 @@ def test_formato_novo_e_antigo_produzem_a_mesma_matriz():
     _, m_novo, _ = judgments_to_pairwise_matrix(novo, CRITERIA)
     _, m_antigo, _ = judgments_to_pairwise_matrix(antigo, CRITERIA)
     assert np.allclose(m_novo, m_antigo)
+
+
+# --- Diagnóstico do par mais inconsistente ---------------------------------
+
+
+def test_pior_par_aponta_o_julgamento_que_destoa():
+    """
+    Numa matriz consistente vale `a_ij = w_i/w_j`. O par a revisar é o de maior
+    desvio dessa razão — o diagnóstico que torna "revise as comparações" acionável.
+    """
+    import numpy as np
+
+    from ahp import most_inconsistent_pair, priority_vector
+
+    # sust > perf, perf > sec, sec > sust: circular, todos com intensidade 3.
+    matriz = np.array(
+        [
+            [1.0, 3.0, 1 / 3],
+            [1 / 3, 1.0, 3.0],
+            [3.0, 1 / 3, 1.0],
+        ]
+    )
+    pesos, _, _, cr = priority_vector(matriz)
+    assert cr > 0.10
+
+    pior = most_inconsistent_pair(matriz, pesos, ["a", "b", "c"])
+    assert pior is not None
+    assert pior["judged_ratio"] != pytest.approx(pior["implied_ratio"], rel=0.01)
+    assert pior["log_deviation"] > 0
+
+
+def test_matriz_consistente_nao_recebe_diagnostico_de_par():
+    """Numa matriz coerente o "pior par" é ruído — exibi-lo sugeriria um problema."""
+    resultado = derive_criteria_weights(
+        judgments_from(
+            comparison("c1", "sustainability", "performance", "performance", "moderate"),
+            comparison("c2", "sustainability", "security", "security", "strong"),
+            comparison("c3", "performance", "security", "security", "moderate"),
+        ),
+        CRITERIA,
+    )
+    assert resultado["is_consistent"] is True
+    assert resultado["worst_pair"] is None
