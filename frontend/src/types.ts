@@ -108,6 +108,8 @@ export interface AhpResult {
   consistency_ratio: number;
   is_consistent: boolean;
   consistency_threshold: number;
+  /** Preenchido apenas em envios antigos, gravados antes da porta da §4.2.3 */
+  worst_pair?: WorstPair | null;
 }
 
 /** Estado da evidência de um indicador (§11) */
@@ -218,6 +220,36 @@ export interface IndicatorWeights {
   effective_weight_sum: number;
   /** "evidence_extraction" desde que o desempenho passou a vir dos documentos */
   performance_source: string;
+}
+
+/**
+ * Par de comparações cujo julgamento mais destoa dos demais.
+ *
+ * `judged_ratio` é o que o gestor informou; `implied_ratio` é o que as outras
+ * comparações, juntas, implicam para o mesmo par. A distância entre os dois é a
+ * contradição.
+ */
+export interface WorstPair {
+  pair: string;
+  left: string;
+  right: string;
+  judged_ratio: number;
+  implied_ratio: number;
+  log_deviation: number;
+}
+
+/** Corpo do 409 quando as comparações do bloco D se contradizem (§4.2.3) */
+export interface InconsistencyDetail {
+  error: "AHP_INCONSISTENT_JUDGMENTS";
+  message: string;
+  consistency_ratio: number;
+  consistency_threshold: number;
+  consistency_index: number;
+  lambda_max: number;
+  /** Perguntas do bloco D a revisar */
+  question_ids: string[];
+  judgments: Record<string, { choice: string | null; question_id: string | null }>;
+  worst_pair: WorstPair | null;
 }
 
 export interface RecommendPayload {

@@ -4,10 +4,22 @@ import Stepper from "../components/Stepper";
 import LoadingOverlay from "../components/LoadingOverlay";
 import PairwiseComparison from "../components/PairwiseComparison";
 import ChoiceCards from "../components/ChoiceCards";
-import { loadQuestions, postRecommend } from "../api";
+import { InconsistentJudgmentsError, loadQuestions, postRecommend } from "../api";
 import { useAppState } from "../AppContext";
 import { dimensionOf, emptyAnswer, isComplete } from "../pairwise";
-import type { AnswerPayload, PairwiseAnswer, QuestionDef, QuestionsFile } from "../types";
+import type {
+  AnswerPayload,
+  InconsistencyDetail,
+  PairwiseAnswer,
+  QuestionDef,
+  QuestionsFile,
+} from "../types";
+
+const DIMENSION_LABELS: Record<string, string> = {
+  sustainability: "Sustentabilidade",
+  performance: "Desempenho Operacional",
+  security: "Segurança da Informação",
+};
 
 /** Extrai o "1." de "**1.** Ao definir critérios…" para referenciar a pergunta nos erros. */
 function questionNumber(label: string): string {
@@ -66,6 +78,10 @@ export default function Questionnaire() {
   // auditoria, e um registro anônimo não sustenta auditoria.
   const [identityErrors, setIdentityErrors] = useState<{ email?: string; role?: string }>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Comparações que se contradizem (§4.2.3). Estado próprio, e não texto de
+  // erro, porque a tela precisa marcar as perguntas e levar o gestor até elas.
+  const [inconsistency, setInconsistency] = useState<InconsistencyDetail | null>(null);
+  const inconsistencyBoxRef = useRef<HTMLDivElement>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const errorBoxRef = useRef<HTMLDivElement>(null);
@@ -165,6 +181,7 @@ export default function Questionnaire() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitError(null);
+    setInconsistency(null);
 
     // Mesma checagem frouxa do backend: exige a forma "algo@dominio.tld" sem
     // tentar cobrir a RFC 5322.
@@ -227,7 +244,17 @@ export default function Questionnaire() {
       setAnswers(answers);
       navigate("/results");
     } catch (err) {
-      setSubmitError(String(err));
+      // §4.2.3: julgamentos contraditórios não produzem avaliação. A tela pede a
+      // revisão das comparações em vez de mostrar um erro — as respostas ficam
+      // todas onde estão, e só o bloco D precisa de ajuste.
+      if (err instanceof InconsistentJudgmentsError) {
+        setInconsistency(err.detail);
+        requestAnimationFrame(() =>
+          inconsistencyBoxRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }),
+        );
+      } else {
+        setSubmitError(String(err));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -466,6 +493,68 @@ export default function Questionnaire() {
                   </button>
                 </li>
               ))}
+            </ul>
+          </div>
+        )}
+
+        {inconsistency && (
+          <div
+            ref={inconsistencyBoxRef}
+            role="alert"
+            className="rounded-2xl border border-amber-300 bg-amber-50 p-5 ring-4 ring-amber-500/10"
+          >
+            <h3 className="mb-1 flex items-center gap-2 font-semibold text-amber-900">
+              <span aria-hidden>⚠</span>
+              Revise as comparações antes de prosseguir
+            </h3>
+            <p className="mb-3 text-sm leading-relaxed text-amber-900">
+              {inconsistency.message}{" "}
+              <span className="whitespace-nowrap">
+                Razão de consistência: <strong>{inconsistency.consistency_ratio.toFixed(3)}</strong>{" "}
+                (limite {inconsistency.consistency_threshold}).
+              </span>
+            </p>
+
+            {inconsistency.worst_pair && (
+              <p className="mb-3 rounded-xl bg-amber-100/70 px-3 py-2 text-sm leading-relaxed text-amber-900">
+                A comparação que mais destoa é entre{" "}
+                <strong>
+                  {DIMENSION_LABELS[inconsistency.worst_pair.left] ??
+                    inconsistency.worst_pair.left}
+                </strong>{" "}
+                e{" "}
+                <strong>
+                  {DIMENSION_LABELS[inconsistency.worst_pair.right] ??
+                    inconsistency.worst_pair.right}
+                </strong>
+                : as outras duas respostas, juntas, apontam para uma prioridade diferente da que
+                você marcou aqui. Comece por ela.
+              </p>
+            )}
+
+            <p className="mb-2 text-sm text-amber-800">
+              Clique para ir direto a cada comparação:
+            </p>
+            <ul className="space-y-1.5">
+              {inconsistency.question_ids.map((id) => {
+                const q = allQuestions.find((item) => item.id === id);
+                return (
+                  <li key={id}>
+                    <button
+                      type="button"
+                      onClick={() => focusQuestion(id)}
+                      className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-amber-900 transition hover:bg-amber-100"
+                    >
+                      <span className="mt-0.5 flex h-5 min-w-5 items-center justify-center rounded bg-amber-200 px-1 text-[11px] font-bold text-amber-900">
+                        {(q && questionNumber(q.label)) || "•"}
+                      </span>
+                      <span className="underline decoration-amber-300 underline-offset-2">
+                        {q ? questionText(q.label) : id}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}
