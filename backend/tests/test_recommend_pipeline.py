@@ -13,6 +13,8 @@ construído, de modelo de embedding baixado nem de rede.
 import json
 import re
 
+CRITERIOS = ("sustainability", "performance", "security")
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -288,6 +290,106 @@ def test_limitacao_nao_penaliza_a_pontuacao(client):
             if i["contribution"] is not None
         ]
         assert sum(contribuicoes) == pytest.approx(linha["score"], abs=1e-6)
+
+
+# --- Porta da consistência (§4.2.3) ----------------------------------------
+
+
+def _envio_circular(intensidade="moderate"):
+    """
+    Julgamentos que se contradizem: A > B, B > C e C > A.
+
+    É a contradição que o AHP existe para detectar — cada comparação é plausível
+    isoladamente, e juntas não descrevem nenhuma ordem de prioridade.
+    """
+    envio = _envio()
+    circular = {
+        "comp_sust_perf": ("sustainability", "performance", "sustainability"),
+        "comp_perf_sec": ("performance", "security", "performance"),
+        "comp_sust_sec": ("security", "sustainability", "security"),
+    }
+    for resposta in envio["answers"]:
+        par = circular.get(resposta["question_id"])
+        if par:
+            left, right, preferida = par
+            resposta["pairwise"] = {
+                "left": left,
+                "right": right,
+                "preference": preferida,
+                "intensity": intensidade,
+            }
+    return envio
+
+
+def test_julgamentos_inconsistentes_interrompem_a_avaliacao(client):
+    """
+    §4.2.3: "Caso o valor de CR seja superior a 0,10, o sistema informa ao
+    usuário a existência de inconsistência nos julgamentos e solicita a revisão
+    das comparações antes do prosseguimento do processo de avaliação."
+    """
+    resposta = client.post("/api/recommend", json=_envio_circular())
+    assert resposta.status_code == 409
+
+    detalhe = resposta.json()["detail"]
+    assert detalhe["error"] == "AHP_INCONSISTENT_JUDGMENTS"
+    assert detalhe["consistency_ratio"] > detalhe["consistency_threshold"]
+    assert "revise" in detalhe["message"].lower()
+
+
+def test_inconsistencia_aponta_as_comparacoes_a_revisar(client):
+    """Solicitar a revisão exige dizer o que revisar."""
+    detalhe = client.post("/api/recommend", json=_envio_circular()).json()["detail"]
+
+    assert set(detalhe["question_ids"]) == {
+        "comp_sust_perf",
+        "comp_sust_sec",
+        "comp_perf_sec",
+    }
+    pior = detalhe["worst_pair"]
+    assert pior["left"] in CRITERIOS and pior["right"] in CRITERIOS
+    # O julgamento informado contradiz o que os demais implicam para o mesmo par.
+    assert pior["judged_ratio"] != pytest.approx(pior["implied_ratio"], rel=0.01)
+
+
+def test_avaliacao_inconsistente_nao_gasta_llm_nem_rag(client):
+    """
+    "Antes do prosseguimento" é literal: nada roda depois da porta. A extração
+    documental é a parte cara do pipeline, e pagá-la para produzir um ranking que
+    o próprio método declara não utilizável seria a pior das duas opções.
+    """
+    client.fake_model.chamadas.clear()
+    client.post("/api/recommend", json=_envio_circular())
+    assert client.fake_model.chamadas == []
+
+
+def test_avaliacao_inconsistente_nao_e_gravada(client):
+    """Sem resultado produzido não há avaliação a registrar."""
+    def total():
+        _itens, quantidade = client.db.list_submissions(limit=50, offset=0)
+        return quantidade
+
+    antes = total()
+    client.post("/api/recommend", json=_envio_circular())
+    assert total() == antes
+
+
+def test_consistente_no_limite_prossegue(client):
+    """A porta é sobre contradição, não sobre exigir julgamentos perfeitos."""
+    corpo = client.post("/api/recommend", json=_envio()).json()
+    assert corpo["ahp"]["is_consistent"] is True
+    assert corpo["ahp"]["consistency_ratio"] <= corpo["ahp"]["consistency_threshold"]
+    # Matriz consistente não recebe diagnóstico de par — não há o que revisar.
+    assert corpo["ahp"]["worst_pair"] is None
+    assert not any("consistência" in item.lower() for item in corpo["limitations"])
+
+
+def test_revisao_recupera_a_avaliacao(client):
+    """
+    O bloqueio precisa ser recuperável: corrigida a comparação circular, o mesmo
+    gestor conclui a avaliação sem refazer o resto do questionário.
+    """
+    assert client.post("/api/recommend", json=_envio_circular()).status_code == 409
+    assert client.post("/api/recommend", json=_envio()).status_code == 200
 
 
 def test_sem_provedor_com_documento_o_endpoint_recusa(client, monkeypatch):

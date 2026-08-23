@@ -157,6 +157,57 @@ def priority_vector(
     return w, lambda_max, consistency_index, consistency_ratio
 
 
+def most_inconsistent_pair(
+    matrix: np.ndarray,
+    weights: np.ndarray,
+    keys: Sequence[str],
+) -> Dict[str, Any] | None:
+    """
+    Par de critérios que mais se afasta da coerência da matriz.
+
+    Numa matriz perfeitamente consistente vale `a_ij = w_i / w_j`. Quando o CR
+    passa do limite, o julgamento mais responsável é aquele cujo `a_ij` mais se
+    distancia dessa razão — o diagnóstico clássico de Saaty para revisão.
+
+    A comparação é feita sobre `a_ij / (w_i/w_j)` em escala logarítmica, porque a
+    escala de Saaty é multiplicativa: julgar 9 quando a matriz pede 3 é o mesmo
+    tamanho de erro que julgar 1/9 quando ela pede 1/3, e a diferença absoluta
+    diria que o primeiro é vinte vezes pior.
+
+    Devolve `None` quando não há par a apontar (matriz de ordem 1, ou pesos
+    zerados). Serve para orientar a revisão, **não** para corrigir julgamento:
+    quem revisa é o gestor.
+    """
+    n = matrix.shape[0]
+    if n < 2 or not np.all(weights > 0):
+        return None
+
+    pior: Dict[str, Any] | None = None
+    maior_desvio = 0.0
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            esperado = float(weights[i] / weights[j])
+            observado = float(matrix[i][j])
+            if esperado <= 0 or observado <= 0:
+                continue
+            desvio = abs(float(np.log(observado / esperado)))
+            if desvio > maior_desvio:
+                maior_desvio = desvio
+                pior = {
+                    "pair": f"{keys[i]}|{keys[j]}",
+                    "left": keys[i],
+                    "right": keys[j],
+                    "judged_ratio": round(observado, 4),
+                    # A razão que os demais julgamentos, juntos, implicam para
+                    # este par. É o número com que o informado se contradiz.
+                    "implied_ratio": round(esperado, 4),
+                    "log_deviation": round(desvio, 4),
+                }
+
+    return pior
+
+
 def derive_criteria_weights(
     judgments: Dict[str, Dict[str, Any]],
     criteria: Sequence[str],
@@ -217,4 +268,11 @@ def derive_criteria_weights(
         "consistency_ratio": round(float(cr), 4),
         "is_consistent": bool(cr <= consistency_threshold),
         "consistency_threshold": consistency_threshold,
+        # Só faz sentido apontar um par quando há inconsistência a revisar.
+        # Numa matriz consistente o "pior par" é ruído de arredondamento, e
+        # exibi-lo sugeriria um problema que não existe.
+        "worst_pair": (
+            None if cr <= consistency_threshold
+            else most_inconsistent_pair(matrix, weights, keys)
+        ),
     }

@@ -1,5 +1,6 @@
 import type {
   AdminStats,
+  InconsistencyDetail,
   IngestResult,
   QuestionsFile,
   RagJob,
@@ -29,6 +30,23 @@ export async function loadQuestions(): Promise<QuestionsFile> {
   return res.json() as Promise<QuestionsFile>;
 }
 
+/**
+ * Comparações do bloco D que se contradizem (§4.2.3).
+ *
+ * Erro próprio, e não texto de erro, porque a interface precisa **agir**: levar o
+ * gestor de volta às comparações com o diagnóstico à mão. Um `Error` genérico
+ * viraria uma mensagem vermelha que não diz o que fazer.
+ */
+export class InconsistentJudgmentsError extends Error {
+  detail: InconsistencyDetail;
+
+  constructor(detail: InconsistencyDetail) {
+    super(detail.message);
+    this.name = "InconsistentJudgmentsError";
+    this.detail = detail;
+  }
+}
+
 export async function postRecommend(
   payload: RecommendPayload,
 ): Promise<RecommendationResponse> {
@@ -37,6 +55,17 @@ export async function postRecommend(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+
+  if (res.status === 409) {
+    const detail = await res
+      .json()
+      .then((d) => d?.detail)
+      .catch(() => null);
+    if (detail?.error === "AHP_INCONSISTENT_JUDGMENTS") {
+      throw new InconsistentJudgmentsError(detail as InconsistencyDetail);
+    }
+  }
+
   return asJson<RecommendationResponse>(res);
 }
 
