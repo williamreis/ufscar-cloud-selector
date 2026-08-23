@@ -19,11 +19,11 @@ const f3 = (n: number) => n.toFixed(3);
 const f4 = (n: number) => n.toFixed(4);
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
-/** Valor como o documento o publicou, com unidade ou categoria. */
-function publishedValue(row: SynthesisIndicator): string {
-  if (row.category) return row.category;
+/** Número que entrou na conta, com a unidade quando há. */
+function computedValue(row: SynthesisIndicator): string {
   if (row.original_value === null) return "—";
-  return row.unit ? `${row.original_value} ${row.unit}` : String(row.original_value);
+  const n = row.original_value;
+  return row.unit ? `${n} ${row.unit}` : String(n);
 }
 
 /**
@@ -205,7 +205,7 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
                       {[
                         "Indicador",
                         "Evidência",
-                        "Valor publicado",
+                        "Extraído do documento",
                         "Normalizado",
                         "Peso",
                         "Contribuição",
@@ -247,7 +247,16 @@ export default function SynthesisAudit({ synthesis }: { synthesis: SynthesisResu
                             </span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 text-slate-700">{publishedValue(row)}</td>
+                        <td className="px-3 py-2.5">
+                          <span className="block text-slate-700">
+                            {row.extracted_value || "—"}
+                          </span>
+                          <span className="block text-[11px] text-slate-400">
+                            {row.category
+                              ? `${row.category} → ${computedValue(row)}`
+                              : computedValue(row)}
+                          </span>
+                        </td>
                         <td className="px-3 py-2.5">
                           {row.normalized_value === null ? "—" : f4(row.normalized_value)}
                         </td>

@@ -94,6 +94,9 @@ def client(tmp_path, monkeypatch):
                         "value": 99.9 if quantitativo else None,
                         "unit": "%" if quantitativo else None,
                         "category": None if quantitativo else "level_3",
+                        "extracted_value": (
+                            "99,9% conforme SLA" if quantitativo else "ISO/IEC 27001 e SOC 2"
+                        ),
                         "summary": "Valor declarado no relatório oficial.",
                         "source_chunk_id": chunk.group(1) if chunk else None,
                         "source_document": "relatorio.pdf",

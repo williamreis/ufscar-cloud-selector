@@ -95,6 +95,8 @@ class Finding:
     dimension: str
     status: str
     nature: Optional[str] = None
+    # "o valor ou característica extraída" da §5.4, como o documento a apresenta.
+    extracted_value: Optional[str] = None
     value: Optional[float] = None
     unit: Optional[str] = None
     category: Optional[str] = None
@@ -110,6 +112,7 @@ class Finding:
             "dimension": self.dimension,
             "status": self.status,
             "nature": self.nature,
+            "extracted_value": self.extracted_value,
             "value": self.value,
             "unit": self.unit,
             "category": self.category,
@@ -125,7 +128,7 @@ class Finding:
             indicator_id=self.indicator_id,
             status=self.status,
             value=self.value,
-            raw_value=self.summary,
+            raw_value=self.extracted_value or self.summary,
             unit=self.unit,
             qualitative_category=self.category,
         )
@@ -234,13 +237,30 @@ def _dedupe_chunks(chunks: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+# Termos do Quadro 27 enviados ao modelo. A lista completa de um indicador chega
+# a 15; o prompt já carrega os trechos recuperados, e uma lista longa de siglas
+# compete com eles pela atenção em vez de orientar a leitura.
+MAX_PROMPT_TERMS = 6
+
+
 def describe_indicators(indicators: Sequence[IndicatorConfig]) -> str:
     """
     Lista de indicadores para o prompt, com o que cada um admite como resposta.
 
-    O indicador qualitativo leva junto a allowlist da sua rubrica: sem ela o
-    modelo não teria como escolher uma categoria válida, e a regra 5 seria
-    impossível de cumprir em vez de apenas obrigatória.
+    Três coisas acompanham cada indicador, e cada uma existe por uma exigência
+    diferente do texto:
+
+      - **a allowlist da rubrica**, nos qualitativos. Sem ela o modelo não teria
+        como escolher uma categoria válida, e a regra 5 do prompt seria
+        impossível de cumprir em vez de apenas obrigatória;
+
+      - **as unidades esperadas**, nos quantitativos, para que a regra 4 tenha
+        referência do que "a unidade correspondente" significa naquele indicador;
+
+      - **os termos do Quadro 27**, que a §5.2 descreve como "elementos
+        orientadores na construção das consultas e na recuperação das evidências
+        documentais". Eles já orientam a consulta ao índice; aqui orientam
+        também a leitura do trecho, que é a outra metade da mesma frase.
     """
     linhas: List[str] = []
     for indicator in indicators:
@@ -253,6 +273,9 @@ def describe_indicators(indicators: Sequence[IndicatorConfig]) -> str:
             categorias = ", ".join(indicator.rubric.allowed_categories) if indicator.rubric else ""
             partes.append("  tipo: qualitativo — preencha `category`, deixe `value` e `unit` nulos")
             partes.append(f"  categorias permitidas: {categorias}")
+        termos = [t for t in indicator.search_terms[:MAX_PROMPT_TERMS] if t and t.strip()]
+        if termos:
+            partes.append(f"  termos relacionados: {', '.join(termos)}")
         linhas.append("\n".join(partes))
     return "\n".join(linhas)
 
@@ -300,6 +323,7 @@ def _validate_finding(
             dimension=indicator.dimension,
             status=STATUS_INVALID,
             nature=raw.nature,
+            extracted_value=raw.extracted_value,
             summary=raw.summary,
             rejection=motivo,
         )
@@ -338,6 +362,7 @@ def _validate_finding(
             dimension=indicator.dimension,
             status=status,
             nature=raw.nature,
+            extracted_value=raw.extracted_value,
             value=float(raw.value),
             unit=raw.unit,
             summary=raw.summary,
@@ -366,6 +391,7 @@ def _validate_finding(
         dimension=indicator.dimension,
         status=status,
         nature=raw.nature,
+        extracted_value=raw.extracted_value,
         value=valor,
         category=raw.category,
         summary=raw.summary,
@@ -447,6 +473,7 @@ def enforce_unit_consistency(
                 dimension=finding.dimension,
                 status=STATUS_INVALID,
                 nature=finding.nature,
+                extracted_value=finding.extracted_value,
                 value=finding.value,
                 unit=finding.unit,
                 category=finding.category,
@@ -649,6 +676,7 @@ __all__ = [
     "CHUNKS_PER_INDICATOR",
     "DEFAULT_CONCURRENCY",
     "MAX_CHUNKS_PER_CALL",
+    "MAX_PROMPT_TERMS",
     "PROMPT_ID",
     "ExtractionResult",
     "Finding",

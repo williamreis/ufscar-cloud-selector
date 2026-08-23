@@ -256,10 +256,31 @@ permite refazer a conta dos pesos à mão.
     PerformanceInput → normalização (§9) → agregação (§12)
 
 A consulta é montada **por indicador**, a partir do campo `search_terms` de
-`indicators.json` (o Quadro 27 em forma de dado). A interpretação é uma chamada
-por (provedor × dimensão), com a lista fechada de indicadores daquela dimensão e
-as categorias permitidas de cada rubrica — o modelo devolve valor publicado ou
+`indicators.json` (o Quadro 27 em forma de dado). Os mesmos termos acompanham o
+indicador dentro do prompt: a §5.2 os descreve como orientadores "na construção
+das consultas **e na recuperação das evidências documentais**", que são duas
+etapas, não uma.
+
+A interpretação é uma chamada por (provedor × dimensão), com a lista fechada de
+indicadores daquela dimensão, as unidades esperadas dos quantitativos e as
+categorias permitidas de cada rubrica — o modelo devolve valor publicado ou
 categoria, nunca nota.
+
+**O prompt principal.** `PROMPT_EVIDENCE_EXTRACTION_V1` é a implementação literal
+do Quadro 26: cada linha do quadro é uma seção nomeada no *system prompt*, com a
+instrução operacional reproduzida ao pé da letra. As regras 12–14 (isolamento do
+contexto documental, cobertura da lista, formato JSON) não vêm do quadro e ficam
+agrupadas à parte, para que se saiba o que é da dissertação e o que a
+implementação acrescentou. `test_evidence_extraction.py` tem um teste
+parametrizado por linha do Quadro 26 — editar o prompt e derrubar uma instrução
+quebra a suíte.
+
+A saída segue os campos que a §5.4 enumera: indicador analisado, evidência
+identificada (`summary`), natureza, **valor ou característica extraída**
+(`extracted_value`, mais `value`/`unit` ou `category` na forma que o cálculo
+consome) e referência à fonte. `extracted_value` guarda o que o documento diz
+("ISO/IEC 27001, ISO/IEC 27017 e SOC 2") ao lado do que o modelo classificou
+(`level_4` → 1,00), e é isso que torna a classificação conferível no relatório.
 
 Três validações decidem o que sobrevive (§19):
 

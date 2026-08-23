@@ -116,6 +116,9 @@ def build_synthesis(
                     "direction": indicator.direction,
                     "status": finding.status,
                     "nature": finding.nature,
+                    # "o valor ou característica extraída" (§5.4), como o
+                    # documento a apresenta — ao lado do número que o cálculo usou.
+                    "extracted_value": finding.extracted_value,
                     "original_value": finding.value,
                     "unit": finding.unit,
                     "category": finding.category,
