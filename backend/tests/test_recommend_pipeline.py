@@ -96,7 +96,7 @@ def client(tmp_path, monkeypatch):
                         "nature": "quantitative" if quantitativo else "qualitative",
                         "value": 99.9 if quantitativo else None,
                         "unit": "%" if quantitativo else None,
-                        "category": None if quantitativo else "level_3",
+                        "category": None if quantitativo else "alto",
                         "extracted_value": (
                             "99,9% conforme SLA" if quantitativo else "ISO/IEC 27001 e SOC 2"
                         ),
