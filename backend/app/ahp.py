@@ -19,18 +19,12 @@ prioridade dos indicadores dentro de cada dimensão.
 from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
-import pandas as pd
 
 # Índice Randômico de Saaty, por ordem da matriz (n). Usado no denominador do CR.
 SAATY_RANDOM_INDEX = {1: 0.0, 2: 0.0, 3: 0.58, 4: 0.90, 5: 1.12, 6: 1.24, 7: 1.32, 8: 1.41, 9: 1.45, 10: 1.49}
 
 # Acima disso os julgamentos são considerados inconsistentes demais (Saaty: 0.10).
 CONSISTENCY_THRESHOLD = 0.10
-
-
-def normalize_weights(raw_weights: dict) -> dict:
-    s = sum(raw_weights.values())
-    return {k: (v / s if s > 0 else 1 / len(raw_weights)) for k, v in raw_weights.items()}
 
 
 def judgments_to_pairwise_matrix(
@@ -224,66 +218,3 @@ def derive_criteria_weights(
         "is_consistent": bool(cr <= consistency_threshold),
         "consistency_threshold": consistency_threshold,
     }
-
-
-def compute_ahp_ranking(criteria_weights: dict, providers: list) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """
-    Síntese das prioridades das alternativas (modo distributivo do AHP): as notas
-    de cada provedor são normalizadas dentro de cada critério (somam 1 por
-    critério) antes da agregação ponderada. Por isso as prioridades finais também
-    somam 1 entre os provedores — diferente de uma soma ponderada simples, cujos
-    scores ficariam na faixa 0-1 de cada nota bruta.
-
-    Devolve o ranking e a memória de cálculo da síntese, célula a célula, para que
-    o score final possa ser reconstruído à mão a partir do relatório:
-
-        normalizada = nota / soma das notas do critério
-        contribuição = peso do critério × normalizada
-        score = Σ contribuições
-    """
-    cw = normalize_weights(criteria_weights)
-
-    # Normalização por critério (coluna) entre os provedores
-    column_totals = {
-        c: sum(p["scores"].get(c, 0.5) for p in providers) for c in cw
-    }
-
-    rows = []
-    audit_providers = []
-    for p in providers:
-        priority = 0.0
-        cells = {}
-        for c, w in cw.items():
-            value = p["scores"].get(c, 0.5)
-            total = column_totals.get(c, 0.0)
-            normalized = (value / total) if total > 0 else (1.0 / len(providers))
-            contribution = w * normalized
-            priority += contribution
-            cells[c] = {
-                "raw": round(float(value), 4),
-                "normalized": round(float(normalized), 6),
-                "weight": round(float(w), 6),
-                "contribution": round(float(contribution), 6),
-            }
-        rows.append({"id": p["id"], "name": p["name"], "score": priority})
-        audit_providers.append(
-            {"id": p["id"], "name": p["name"], "cells": cells, "score": round(float(priority), 6)}
-        )
-
-    df = pd.DataFrame(rows)
-    df = df.sort_values(by="score", ascending=False).reset_index(drop=True)
-    df["rank"] = df.index + 1
-
-    order = {pid: i for i, pid in enumerate(df["id"])}
-    audit_providers.sort(key=lambda a: order.get(a["id"], len(order)))
-
-    synthesis = {
-        "mode": "distributive",
-        "criteria_order": list(cw.keys()),
-        "weights": {c: round(float(w), 6) for c, w in cw.items()},
-        "column_totals": {c: round(float(t), 4) for c, t in column_totals.items()},
-        "providers": audit_providers,
-        # Deve ser 1 (a menos de arredondamento): serve de verificação no relatório.
-        "score_total": round(float(sum(r["score"] for r in rows)), 6),
-    }
-    return df, synthesis

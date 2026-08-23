@@ -46,6 +46,7 @@ from domain.weights import (
     WeightSet,
     collect_relevance,
     compute_weights,
+    indicators_for,
     weights_from_answers,
 )
 
@@ -75,6 +76,7 @@ __all__ = [
     "compute_scores",
     "compute_weights",
     "get_methodology",
+    "indicators_for",
     "load_methodology",
     "normalize_values",
     "reload_methodology",

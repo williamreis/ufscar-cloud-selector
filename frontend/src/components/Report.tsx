@@ -86,6 +86,7 @@ export default function Report({
     submission_id: submissionId,
   } = result;
   const scoresUnsourced = coverage?.scores_provenance?.status === "unsourced_placeholder";
+  const evidenceCoverage = coverage?.evidence;
   // Com RC acima do limite de Saaty os pesos saem de julgamentos que se
   // contradizem. O ranking continua sendo exibido — escondê-lo não ajudaria a
   // revisar —, mas como resultado preliminar, não como recomendação fechada.
@@ -100,8 +101,8 @@ export default function Report({
       .filter((j) => j.question_id && j.choice)
       .map((j) => [j.question_id as string, j.choice as string]),
   );
-  // As prioridades do AHP (modo distributivo) somam 1 entre os provedores, então
-  // ficam na casa de 1/n — o eixo precisa acompanhar essa escala, não [0,1].
+  // A pontuação da Equação 5 fica em [0,1], mas raramente encosta em 1 — o eixo
+  // acompanha o maior score para que a diferença entre os provedores apareça.
   const maxScore = Math.max(...ranking.map((r) => r.score));
   const scoreAxisMax = Math.min(1, Math.ceil(maxScore * 12) / 10);
   const top = ranking[0];
@@ -346,20 +347,32 @@ export default function Report({
         <SectionTitle
           step="c"
           title="Comparativo dos provedores por critério"
-          desc="Nota de cada provedor (0 a 1) em cada critério avaliado."
+          desc="Desempenho de cada provedor (0 a 1) em cada dimensão, extraído dos documentos e já normalizado. Sem o peso da dimensão: mede desempenho, não prioridade."
         />
 
-        {scoresUnsourced && (
+        {scoresUnsourced ? (
           <div className="mb-3 flex gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
             <span aria-hidden>⚠️</span>
             <p className="leading-relaxed">
-              <strong>Atenção — notas sem fonte.</strong> {coverage?.scores_provenance.summary} Elas
-              não são extraídas dos documentos indexados: o RAG alimenta apenas a seção de
-              evidências. Portanto, a <strong>ordem do ranking</strong> decorre destes valores de
-              referência, não dos relatórios oficiais. Os pesos dos critérios (seção B), esses sim,
-              são calculados a partir das suas respostas e podem ser auditados acima.
+              <strong>Atenção — notas sem fonte.</strong> {coverage?.scores_provenance.summary}
             </p>
           </div>
+        ) : (
+          evidenceCoverage && (
+            <div className="mb-3 flex gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              <span aria-hidden>📄</span>
+              <p className="leading-relaxed">
+                <strong>
+                  {evidenceCoverage.indicators_in_comparison} de{" "}
+                  {evidenceCoverage.indicators_requested} indicadores
+                </strong>{" "}
+                reuniram evidência comparável em todos os provedores e formaram o ranking. Os
+                demais saíram da conta — para todos os provedores, sem penalizar ninguém — e
+                aparecem com o motivo na memória de cálculo abaixo. Cada valor usado pode ser
+                conferido no documento de origem.
+              </p>
+            </div>
+          )
         )}
 
         <ChartCard>
@@ -455,12 +468,13 @@ export default function Report({
             <span aria-hidden>ℹ️</span>
             <p className="leading-relaxed">
               <strong>{providersWithoutEvidence.map(providerName).join(" e ")}</strong>{" "}
-              {providersWithoutEvidence.length === 1 ? "não possui" : "não possuem"} documentos
-              indexados nesta base, portanto não há trechos a citar. Isso{" "}
-              <strong>não afeta o ranking</strong> — as notas por critério vêm da base de
-              referência dos provedores, não dos documentos. Para gerar evidências, adicione os
-              relatórios desses provedores em <code className="rounded bg-amber-100 px-1">data/pdf</code>{" "}
-              (com o nome do provedor no nome do arquivo) ou anexe-os na sua sessão.
+              {providersWithoutEvidence.length === 1 ? "não possui" : "não possuem"} trechos
+              recuperados nesta base. Como o desempenho é extraído dos documentos,{" "}
+              <strong>os indicadores sem evidência saem da comparação</strong> — de todos os
+              provedores, para que ninguém seja avaliado por uma régua diferente. Para ampliar a
+              base, adicione os relatórios desses provedores em{" "}
+              <code className="rounded bg-amber-100 px-1">data/pdf</code> (com o nome do provedor
+              no nome do arquivo) ou anexe-os na sua sessão.
             </p>
           </div>
         )}
