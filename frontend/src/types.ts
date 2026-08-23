@@ -110,33 +110,112 @@ export interface AhpResult {
   consistency_threshold: number;
 }
 
-/** Uma célula (provedor × critério) da síntese das alternativas */
+/** Estado da evidência de um indicador (§11) */
+export type EvidenceStatus = "FOUND" | "PARTIAL" | "NOT_FOUND" | "INVALID";
+
+/** Uma célula (provedor × dimensão) da agregação */
 export interface SynthesisCell {
-  /** Nota de referência do provedor no critério (0–1) */
-  raw: number;
-  /** raw ÷ soma das notas do critério */
-  normalized: number;
-  /** Peso do critério vindo do AHP */
+  /** Peso da dimensão vindo do AHP */
   weight: number;
-  /** weight × normalized */
+  /** Soma das contribuições dos indicadores da dimensão */
   contribution: number;
+  /**
+   * Desempenho médio na dimensão (0–1), sem o peso dela. Ausente quando nenhum
+   * indicador da dimensão reuniu evidência comparável.
+   */
+  performance?: number;
 }
 
-/** Memória de cálculo do score final (modo distributivo do AHP) */
+/** Uma linha da matriz de desempenho: um indicador de um provedor */
+export interface SynthesisIndicator {
+  indicator_id: string;
+  name: string;
+  dimension: string;
+  data_type: "quantitative" | "qualitative";
+  direction: "benefit" | "minimize" | null;
+  status: EvidenceStatus;
+  nature: string | null;
+  /** Valor como publicado no documento (quantitativo) ou pela rubrica */
+  original_value: number | null;
+  unit: string | null;
+  category: string | null;
+  /** Síntese da evidência produzida pela LLM */
+  summary: string | null;
+  /** Por que a evidência foi recusada na validação, quando foi */
+  rejection: string | null;
+  source_chunk_id: string | null;
+  source_document: string | null;
+  /** Entrou no conjunto comparável V (§11.1) */
+  in_comparison: boolean;
+  excluded_reason: string | null;
+  /** r_ij — Equações 1 e 2 */
+  normalized_value: number | null;
+  /** w'_j — peso global renormalizado sobre V (§11.2) */
+  effective_weight: number | null;
+  /** w'_j × r_ij */
+  contribution: number | null;
+}
+
+/** Memória de cálculo do score final (Equação 5: soma ponderada) */
 export interface SynthesisResult {
   mode: string;
+  equation: string;
   criteria_order: string[];
-  weights: Record<string, number>;
-  /** Soma das notas de todos os provedores em cada critério (denominador) */
-  column_totals: Record<string, number>;
+  /** Pesos das dimensões, do AHP */
+  dimension_weights: Record<string, number>;
+  /** Pesos dos indicadores já renormalizados sobre o conjunto comparável */
+  effective_weights: Record<string, number>;
+  valid_indicators: string[];
+  /** indicator_id → motivo da exclusão */
+  excluded_indicators: Record<string, string>;
+  indicators: {
+    indicator_id: string;
+    name: string;
+    dimension: string;
+    data_type: string;
+    direction: string | null;
+    effective_weight: number;
+  }[];
   providers: {
     id: string;
     name: string;
+    rank: number;
+    tied: boolean;
     cells: Record<string, SynthesisCell>;
+    indicators: SynthesisIndicator[];
     score: number;
   }[];
-  /** Soma dos scores — deve ser 1, serve de verificação */
-  score_total: number;
+  tie_break_policy: string;
+  has_ties: boolean;
+  /** Soma dos pesos efetivos — deve ser 1, serve de verificação */
+  effective_weight_sum: number;
+  /** Fração dos indicadores com peso que entraram na comparação */
+  comparability_rate: number | null;
+}
+
+/** Os quatro níveis de peso de um indicador (§7 e §11.2) */
+export interface IndicatorWeightRow {
+  indicator_id: string;
+  name: string;
+  dimension: string;
+  question_id: string | null;
+  relevance_coefficient: number | null;
+  relevance_state: "answered" | "unknown" | "missing";
+  local_weight: number | null;
+  dimension_weight: number | null;
+  global_weight: number | null;
+  effective_weight: number | null;
+  is_valid_for_comparison: boolean;
+  excluded_reason: string | null;
+}
+
+export interface IndicatorWeights {
+  indicators: IndicatorWeightRow[];
+  dimensions_needing_review: string[];
+  global_weight_sum: number;
+  effective_weight_sum: number;
+  /** "evidence_extraction" desde que o desempenho passou a vir dos documentos */
+  performance_source: string;
 }
 
 export interface RecommendPayload {
@@ -166,6 +245,9 @@ export interface EvidenceItem {
   page_content: string;
   score: number;
   criterion?: string;
+  /** Indicador cuja consulta recuperou este trecho */
+  indicator_id?: string;
+  indicator_name?: string;
   file_name?: string | null;
   /** 1-indexed, pronto para exibição e para o fragmento #page=N do viewer de PDF */
   page?: number | null;
@@ -184,6 +266,9 @@ export interface RecommendationResponse {
   evidences: Record<string, EvidenceItem[]>;
   ahp?: AhpResult;
   synthesis?: SynthesisResult;
+  indicator_weights?: IndicatorWeights;
+  status?: string;
+  limitations?: string[];
   /** Id do registro de auditoria. Nulo = o envio não foi gravado no banco. */
   submission_id?: string | null;
   unscored_answers?: string[];
@@ -195,6 +280,14 @@ export interface Coverage {
   evaluated: { id: string; name: string; chunks: number }[];
   excluded_no_documents: { id: string; name: string }[];
   scores_provenance: { status: string; summary: string };
+  /** Cobertura da extração documental (§29) */
+  evidence?: {
+    by_status: Partial<Record<EvidenceStatus, number>>;
+    indicators_requested: number;
+    indicators_in_comparison: number;
+    excluded_indicators: Record<string, string>;
+    comparability_rate: number | null;
+  };
 }
 
 // ===========================================================================

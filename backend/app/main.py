@@ -13,11 +13,19 @@ import audit
 import auth
 import db
 import documents
+import evidence
 import rag
 from admin import router as admin_router
-from ahp import compute_ahp_ranking, derive_criteria_weights
+from ahp import derive_criteria_weights
 from config import get_settings
-from domain import get_methodology, weights_from_answers
+from domain import (
+    build_comparability_set,
+    compute_scores,
+    get_methodology,
+    indicators_for,
+    renormalize_weights,
+    weights_from_answers,
+)
 from guardrails import (
     GuardrailLog,
     GuardrailRejection,
@@ -27,6 +35,7 @@ from guardrails import (
 )
 from llm.prompts import registered_versions
 from preferences import explain_preferences
+from reporting import build_synthesis, dimension_performance
 from providers_data import PROVIDERS, PROVIDER_SCORES_PROVENANCE
 from rag.metadata import SCOPE_GLOBAL, evaluation_scope
 from schemas import CRITERIA, QuestionnaireResponse, RecommendationResponse
@@ -161,57 +170,74 @@ async def recommend(q: QuestionnaireResponse):
             ),
         )
 
-    # 6) Síntese das prioridades das alternativas, com a memória de cálculo
-    #    célula a célula (nota → normalizada → contribuição → score).
-    ranking, synthesis = compute_ahp_ranking(criteria_weights, evaluated)
-
-    # 7) Matriz de scores por provedor (para dashboard: tabela e gráficos)
-    providers_by_id = {p["id"]: p for p in evaluated}
-    criteria_keys = list(criteria_weights.keys())
-    provider_scores = []
-    for _, row in ranking.iterrows():
-        pid, name, total = row["id"], row["name"], float(row["score"])
-        scores = providers_by_id.get(pid, {}).get("scores", {})
-        provider_scores.append({
-            "id": pid,
-            "name": name,
-            "rank": int(row["rank"]),
-            "score": round(total, 4),
-            **{c: round(float(scores.get(c, 0.5)), 4) for c in criteria_keys},
-        })
-
-    # 8) RAG para evidências, uma busca por (provedor × dimensão), de modo que cada
-    #    trecho recuperado fique atrelado ao indicador que ele sustenta. Cada
-    #    consulta e os trechos que ela devolveu ficam registrados (§27, bloco RAG).
+    # 6) Evidências documentais → desempenho por indicador (§4.4.1).
+    #    O RAG consulta uma vez por (provedor × indicador), usando os termos do
+    #    Quadro 27 que vivem em `indicators.json`; a LLM interpreta os trechos
+    #    sob o prompt do Quadro 26 e devolve valor publicado ou categoria de
+    #    rubrica. Ela não atribui nota: a conversão em número é da rubrica, e a
+    #    normalização vem no passo seguinte.
     session_id = getattr(q, "session_id", None) or None
-    evidences: Dict[str, list] = {}
-    for provider in evaluated:
-        pid, pname = provider["id"], provider["name"]
-        items = []
-        for criterion in criteria_keys:
-            query_text = f"{pname}: {rag.query_for(criterion)}"
-            hits = await run_in_threadpool(
-                rag.search,
-                query_text,
-                # Restringe aos documentos deste provedor: sem isso, um provedor sem
-                # documentos indexados receberia trechos de outro provedor como
-                # "evidência" (a similaridade responde aos termos, não ao nome).
-                2,
-                session_id,
-                pid,
-            )
-            rag_audit.append(
-                {
-                    "dimension": criterion,
-                    "provider_id": pid,
-                    "query_text": query_text,
-                    "top_k": 2,
-                    "chunks": hits,
-                }
-            )
-            for h in hits:
-                items.append({**h, "criterion": criterion})
-        evidences[pid] = items
+    weighted_indicators = indicators_for(weight_set, methodology)
+    extraction = await evidence.extract_performances(
+        providers=evaluated,
+        indicators=weighted_indicators,
+        methodology=methodology,
+        session_id=session_id,
+        guardrail_log=guardrail_log,
+    )
+    llm_runs.extend(extraction.llm_runs)
+    rag_audit.extend(extraction.rag_audit)
+    evidences: Dict[str, list] = extraction.evidences
+
+    # 7) Conjunto comparável (§11.1), renormalização (§11.2) e agregação (§12).
+    #    Um indicador só entra se houver valor comparável para TODOS os
+    #    provedores da avaliação; os que ficam de fora saem com o motivo, e os
+    #    pesos dos que permanecem são renormalizados para somar 1.
+    provider_ids = [p["id"] for p in evaluated]
+    comparability = build_comparability_set(
+        extraction.performances(),
+        provider_ids,
+        weight_set.global_weights().keys(),
+        methodology,
+    )
+    effective_weights = renormalize_weights(
+        weight_set.global_weights(), comparability.valid
+    )
+    scoring = compute_scores(evaluated, comparability, effective_weights, methodology)
+
+    # 8) Ranking, matriz para o dashboard e memória de cálculo da agregação.
+    criteria_keys = list(criteria_weights.keys())
+    ranking = [
+        {
+            "id": s.provider_id,
+            "name": s.provider_name,
+            "rank": s.rank,
+            "score": round(s.score, 6),
+            "tied": s.tied,
+        }
+        for s in scoring.scores
+    ]
+    synthesis = build_synthesis(
+        scoring=scoring,
+        extraction=extraction,
+        comparability=comparability,
+        criteria_weights=criteria_weights,
+        criteria_keys=criteria_keys,
+        methodology=methodology,
+    )
+    provider_scores = [
+        {
+            "id": s.provider_id,
+            "name": s.provider_name,
+            "rank": s.rank,
+            "score": round(s.score, 6),
+            **{
+                c: round(v, 6)
+                for c, v in dimension_performance(s).items()
+            },
+        }
+        for s in scoring.scores
+    ]
 
     # 9) Versões em vigor (§28): identificam com que questionário, algoritmo,
     #    prompts, modelos e configuração metodológica este resultado foi produzido.
@@ -225,8 +251,33 @@ async def recommend(q: QuestionnaireResponse):
     limitations: List[str] = []
     if versions.get("questions_hash") is None:
         limitations.append("Versão do questionário não pôde ser conferida (questions.json ilegível).")
-    if any(run["status"] != "OK" for run in llm_runs):
+    if llm_run.status != "OK":
         limitations.append("A justificativa textual não pôde ser gerada e validada.")
+    extracoes_falhas = [
+        run for run in extraction.llm_runs if run.get("status") != "OK"
+    ]
+    if extracoes_falhas:
+        limitations.append(
+            f"{len(extracoes_falhas)} extração(ões) de evidência não validada(s): os "
+            "indicadores envolvidos ficaram sem evidência em vez de receber valor presumido."
+        )
+    # §11.1: indicador sem valor comparável em todos os provedores sai da conta.
+    # A exclusão não penaliza ninguém, mas encolhe a base do ranking — e o gestor
+    # precisa saber quanto do modelo efetivamente pesou no resultado.
+    if comparability.excluded:
+        nomes_excluidos = ", ".join(
+            methodology.by_id(i).name for i in list(comparability.excluded)[:4]
+        )
+        reticencias = "…" if len(comparability.excluded) > 4 else ""
+        limitations.append(
+            f"{len(comparability.excluded)} indicador(es) fora da comparação por falta de "
+            f"evidência comparável em todos os provedores ({nomes_excluidos}{reticencias})."
+        )
+    if not comparability.valid:
+        limitations.append(
+            "Nenhum indicador reuniu evidência comparável entre os provedores: o ranking "
+            "não tem base documental e não deve ser usado como recomendação."
+        )
     if excluded:
         limitations.append(
             f"{len(excluded)} provedor(es) fora da comparação por ausência de documentos indexados."
@@ -252,9 +303,26 @@ async def recommend(q: QuestionnaireResponse):
         )
     status = STATUS_COMPLETED_WITH_LIMITATIONS if limitations else STATUS_COMPLETED
 
+    # Os quatro níveis de peso de cada indicador, numa lista só: a resposta e o
+    # registro de auditoria precisam ver exatamente os mesmos números, e montar
+    # a lista duas vezes é como as duas visões se separam sem ninguém notar.
+    indicator_weight_rows = [
+        {
+            **weight.as_dict(),
+            "name": methodology.by_id(weight.indicator_id).name,
+            # Peso depois da renormalização sobre o conjunto comparável (§11.2).
+            # Difere do global sempre que algum indicador saiu por falta de
+            # evidência — e é este que multiplicou o desempenho na pontuação.
+            "effective_weight": scoring.effective_weights.get(weight.indicator_id),
+            "is_valid_for_comparison": weight.indicator_id in comparability.valid,
+            "excluded_reason": comparability.excluded.get(weight.indicator_id),
+        }
+        for weight in weight_set.weights
+    ]
+
     # 10) Montar resposta
     response = {
-        "ranking": ranking.to_dict(orient="records"),
+        "ranking": ranking,
         "criteria_weights": criteria_weights,
         "provider_scores": provider_scores,
         "notes": notes,
@@ -272,17 +340,13 @@ async def recommend(q: QuestionnaireResponse):
         # coeficiente. É o que permite reconstruir por que um indicador pesa o
         # que pesa — se veio da dimensão priorizada ou da relevância declarada.
         "indicator_weights": {
-            "indicators": [
-                {**weight.as_dict(), "name": methodology.by_id(weight.indicator_id).name}
-                for weight in weight_set.weights
-            ],
+            "indicators": indicator_weight_rows,
             "dimensions_needing_review": list(weight_set.dimensions_needing_review),
             "global_weight_sum": round(sum(weight_set.global_weights().values()), 6),
-            # O motor de desempenho/agregação por indicador está implementado e
-            # testado, mas ainda não tem fonte: a extração de evidência entra na
-            # Fase 2. Até lá o ranking continua vindo da síntese por dimensão, e
-            # nenhum valor por indicador é inventado para preencher a lacuna.
-            "performance_source": "pending_evidence_extraction",
+            "effective_weight_sum": round(sum(scoring.effective_weights.values()), 6),
+            # O desempenho por indicador agora tem fonte: cada valor vem da
+            # extração documental do RAG + LLM, validada em `evidence.py`.
+            "performance_source": "evidence_extraction",
         },
         # Respostas fora do cálculo numérico (ver docstring de unscored_answers)
         "unscored_answers": q.unscored_answers(),
@@ -294,6 +358,16 @@ async def recommend(q: QuestionnaireResponse):
             ],
             "excluded_no_documents": excluded,
             "scores_provenance": PROVIDER_SCORES_PROVENANCE,
+            # Cobertura da extração (§29): quantas evidências foram encontradas,
+            # quantas faltaram e quantas foram recusadas na validação. É a
+            # medida de quanto do modelo o acervo documental sustentou.
+            "evidence": {
+                "by_status": extraction.coverage_by_status(),
+                "indicators_requested": len(weighted_indicators),
+                "indicators_in_comparison": len(comparability.valid),
+                "excluded_indicators": dict(comparability.excluded),
+                "comparability_rate": comparability.comparability_rate,
+            },
         },
         "versions": versions,
         "status": status,
@@ -313,7 +387,7 @@ async def recommend(q: QuestionnaireResponse):
             guardrail_log.as_dicts(),
             rag_audit,
             status,
-            weight_set.as_dicts(),
+            indicator_weight_rows,
         )
     except Exception:
         logger.exception("Falha ao gravar o envio no banco de auditoria")

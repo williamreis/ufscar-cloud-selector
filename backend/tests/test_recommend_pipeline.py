@@ -11,6 +11,7 @@ construído, de modelo de embedding baixado nem de rede.
 """
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -56,15 +57,57 @@ def client(tmp_path, monkeypatch):
         ],
     )
 
-    # LLM: devolve JSON válido sem tocar a rede.
+    # LLM: devolve JSON válido sem tocar a rede. São dois prompts distintos no
+    # fluxo — a justificativa das preferências e a extração de evidências —, e o
+    # duplo responde a cada um conforme o seu contrato.
     class FakeMessage:
-        content = '{"notes":"A prioridade recai sobre segurança."}'
-        usage_metadata = {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}
+        def __init__(self, content):
+            self.content = content
+            self.usage_metadata = {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+            }
 
     class FakeModel:
+        """Responde por prompt e guarda todas as chamadas para inspeção."""
+
+        def __init__(self):
+            self.chamadas = []
+            self.ultima_chamada = None
+            self.ultima_extracao = None
+
+        @staticmethod
+        def _extracao(messages) -> str:
+            """Uma evidência por indicador pedido, lida da própria lista do prompt."""
+            texto = str(messages)
+            ids = re.findall(r'indicator_id: "([^"]+)"', texto)
+            chunk = re.search(r'chunk_id="([^"]+)"', texto)
+            achados = []
+            for indicator_id in ids:
+                quantitativo = "preencha `value`" in texto.split(indicator_id, 1)[1][:200]
+                achados.append(
+                    {
+                        "indicator_id": indicator_id,
+                        "evidence_status": "FOUND",
+                        "nature": "quantitative" if quantitativo else "qualitative",
+                        "value": 99.9 if quantitativo else None,
+                        "unit": "%" if quantitativo else None,
+                        "category": None if quantitativo else "level_3",
+                        "summary": "Valor declarado no relatório oficial.",
+                        "source_chunk_id": chunk.group(1) if chunk else None,
+                        "source_document": "relatorio.pdf",
+                    }
+                )
+            return json.dumps({"findings": achados})
+
         async def ainvoke(self, messages):
-            self.ultima_chamada = messages
-            return FakeMessage()
+            self.chamadas.append(messages)
+            if "PESOS DAS DIMENSÕES" in str(messages):
+                self.ultima_chamada = messages
+                return FakeMessage('{"notes":"A prioridade recai sobre segurança."}')
+            self.ultima_extracao = messages
+            return FakeMessage(self._extracao(messages))
 
     fake_model = FakeModel()
     monkeypatch.setattr(
@@ -208,10 +251,25 @@ def test_provedor_sem_documento_vira_limitacao_declarada(client):
 
 
 def test_limitacao_nao_penaliza_a_pontuacao(client):
-    """§29.1: cobertura informa, não multiplica score."""
+    """
+    §29.1: cobertura informa, não multiplica score.
+
+    Com a Equação 5 a pontuação é Σ (peso efetivo × desempenho normalizado), e o
+    desempenho normalizado vale no máximo 1 — então o score fica em [0, 1] e não
+    carrega nenhum fator de desconto por cobertura documental. Refazer a conta a
+    partir das contribuições publicadas é a verificação de que não há.
+    """
     corpo = client.post("/api/recommend", json=_envio()).json()
-    soma = sum(linha["score"] for linha in corpo["ranking"])
-    assert soma == pytest.approx(1.0, abs=1e-6)
+    por_provedor = {p["id"]: p for p in corpo["synthesis"]["providers"]}
+
+    for linha in corpo["ranking"]:
+        assert 0.0 <= linha["score"] <= 1.0
+        contribuicoes = [
+            i["contribution"]
+            for i in por_provedor[linha["id"]]["indicators"]
+            if i["contribution"] is not None
+        ]
+        assert sum(contribuicoes) == pytest.approx(linha["score"], abs=1e-6)
 
 
 def test_sem_provedor_com_documento_o_endpoint_recusa(client, monkeypatch):
@@ -305,17 +363,60 @@ def test_pesos_de_indicador_sao_persistidos(client):
     assert certificacoes["relevance_coefficient"] == 4.0  # "Muito relevante"
     assert certificacoes["local_weight"] == pytest.approx(1.0)
     assert certificacoes["global_weight"] == pytest.approx(certificacoes["dimension_weight"])
-    # Renormalização só existe quando houver conjunto comparável (Fase 2).
-    assert certificacoes["effective_weight"] is None
+    # §11.2: com conjunto comparável, o peso efetivo é o global renormalizado.
+    assert certificacoes["effective_weight"] is not None
+    assert certificacoes["is_valid_for_comparison"] is True
 
 
-def test_ranking_ainda_nao_usa_os_indicadores(client):
+def test_ranking_vem_das_evidencias_documentais(client):
     """
-    O motor por indicador está pronto, mas sem fonte de desempenho até a Fase 2.
-    A resposta diz isso em vez de preencher a lacuna com valor inventado.
+    §4.4.1: o desempenho de cada provedor sai da extração documental, não de
+    constante no código. O caminho inteiro precisa aparecer na resposta.
     """
     corpo = client.post("/api/recommend", json=_envio()).json()
-    assert corpo["indicator_weights"]["performance_source"] == "pending_evidence_extraction"
+    assert corpo["indicator_weights"]["performance_source"] == "evidence_extraction"
+    assert corpo["synthesis"]["mode"] == "weighted_sum"
+    assert corpo["synthesis"]["equation"] == "S_i = Σ_{j∈V} w\u0027_j × r_ij"
+
+    # Os pesos efetivos somam 1 sobre o conjunto comparável (§11.2).
+    assert corpo["indicator_weights"]["effective_weight_sum"] == pytest.approx(1.0)
+
+    # E cada valor usado tem origem documental declarada.
+    linhas = corpo["synthesis"]["providers"][0]["indicators"]
+    usados = [i for i in linhas if i["in_comparison"]]
+    assert usados
+    for linha in usados:
+        assert linha["status"] == "FOUND"
+        assert linha["source_chunk_id"]
+        assert linha["original_value"] is not None
+
+
+def test_consulta_rag_e_feita_por_indicador(client):
+    """§16 e Quadro 27: a consulta-base vem dos `search_terms` do indicador."""
+    corpo = client.post("/api/recommend", json=_envio()).json()
+    submission = client.db.get_submission(corpo["submission_id"])
+    consultas = {q["indicator_id"] for q in submission["rag_queries"]}
+    assert "performance_availability" in consultas
+    assert "security_certifications" in consultas
+
+
+def test_llm_nao_recebe_peso_nem_ranking_na_extracao(client):
+    """
+    §5.4: o prompt de extração vê documento e indicador, nunca peso ou posição.
+    Se visse, a separação entre o probabilístico e o determinístico deixaria de
+    existir no ponto exato em que ela mais importa.
+    """
+    corpo = client.post("/api/recommend", json=_envio()).json()
+
+    # A mensagem do usuário é onde os dados entram; o system só tem regras.
+    _papel, conteudo = client.fake_model.ultima_extracao[1]
+    assert "<DOCUMENT_CONTEXT" in conteudo
+
+    # Nenhum peso do AHP aparece no contexto da extração.
+    for peso in corpo["criteria_weights"].values():
+        assert f"{peso:.4f}" not in conteudo
+    for termo in ("PESOS DAS DIMENSÕES", "ranking", "pontuação global"):
+        assert termo not in conteudo
 
 
 def test_versoes_incluem_a_configuracao_metodologica(client):
