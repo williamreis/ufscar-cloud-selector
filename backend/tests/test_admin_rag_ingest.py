@@ -11,6 +11,8 @@ embedding nem constrói índice FAISS.
 """
 
 import importlib
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,6 +40,20 @@ def client(tmp_path, monkeypatch):
     import main
 
     importlib.reload(main)
+
+    # O job vive no módulo: sem reiniciar, um teste herdaria o estado do anterior.
+    documents._job.update(
+        {
+            "state": documents.STATE_IDLE,
+            "job_id": None,
+            "files": [],
+            "started_at": None,
+            "finished_at": None,
+            "progress": {"done": 0, "total": 0, "current": None},
+            "result": None,
+            "error": None,
+        }
+    )
 
     with TestClient(main.app) as test_client:
         test_client.documents = documents
@@ -130,14 +146,38 @@ def test_arquivo_sem_provedor_no_nome_e_sinalizado(client):
 # --- Execução da ingestão --------------------------------------------------
 
 
+def _aguarda_conclusao(client, headers, tentativas: int = 200) -> dict:
+    """
+    A ingestão roda em background; o teste acompanha pela mesma rota que o painel.
+
+    O TestClient roda o event loop num thread próprio, então basta consultar até
+    o job sair de `running`.
+    """
+    for _ in range(tentativas):
+        job = client.get("/api/admin/rag/ingest", headers=headers).json()
+        if job["state"] != "running":
+            return job
+        time.sleep(0.05)
+    raise AssertionError("A ingestão não terminou no tempo esperado.")
+
+
 def test_ingestao_indexa_o_diretorio_e_registra_o_documento(client, monkeypatch):
     _documento(client)
     chamadas = _duplo_de_ingestao(client, monkeypatch)
     headers = _token(client)
 
-    corpo = client.post("/api/admin/rag/ingest", headers=headers).json()
-    assert corpo["files_processed"] == 1
-    assert corpo["chunks"] == 7
+    inicio = client.post("/api/admin/rag/ingest", headers=headers)
+    # 202: a rota inicia o trabalho, não espera terminar — indexar a base passa
+    # do proxy_read_timeout do nginx e devolvia 504 com a ingestão em curso.
+    assert inicio.status_code == 202
+    assert inicio.json()["state"] == "running"
+    assert inicio.json()["files"] == ["aws-sustainability-2025.txt"]
+
+    job = _aguarda_conclusao(client, headers)
+    assert job["state"] == "done"
+    assert job["result"]["files_processed"] == 1
+    assert job["result"]["chunks"] == 7
+    assert job["progress"] == {"done": 1, "total": 1, "current": None}
     assert len(chamadas[0]) == 1
 
     depois = client.get("/api/admin/rag/status", headers=headers).json()
@@ -145,17 +185,81 @@ def test_ingestao_indexa_o_diretorio_e_registra_o_documento(client, monkeypatch)
     assert depois["files"][0]["indexed"] is True
     assert depois["files"][0]["chunks"] == 7
     assert depois["documents_indexed"] == 1
+    assert depois["job"]["state"] == "done"
+
+
+def test_ingestao_processa_um_arquivo_por_vez(client, monkeypatch):
+    """
+    Arquivo a arquivo: é o que torna o progresso real e o que mantém indexado o
+    que já terminou, caso o processo caia no meio.
+    """
+    _documento(client, nome="aws-2025.txt")
+    _documento(client, nome="azure-2025.txt")
+    chamadas = _duplo_de_ingestao(client, monkeypatch)
+    headers = _token(client)
+
+    client.post("/api/admin/rag/ingest", headers=headers)
+    job = _aguarda_conclusao(client, headers)
+
+    assert [len(lote) for lote in chamadas] == [1, 1]
+    assert job["result"]["files_processed"] == 2
+    assert job["result"]["chunks"] == 14
+
+
+def test_ingestao_ja_em_andamento_recusa_um_segundo_disparo(client, monkeypatch):
+    _documento(client)
+    headers = _token(client)
+
+    liberado = threading.Event()
+
+    def ingest_lento(paths, scope, session_id=None, source_type=None, guardrail_log=None):
+        liberado.wait(timeout=5)
+        return {
+            "chunks": 1,
+            "files_processed": 1,
+            "files_failed": 0,
+            "details": [],
+            "unassigned_files": [],
+            "documents": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(client.documents.rag, "ingest_paths", ingest_lento)
+
+    assert client.post("/api/admin/rag/ingest", headers=headers).status_code == 202
+    segunda = client.post("/api/admin/rag/ingest", headers=headers)
+    assert segunda.status_code == 409
+
+    liberado.set()
+    _aguarda_conclusao(client, headers)
+
+
+def test_falha_no_pipeline_deixa_o_job_em_erro(client, monkeypatch):
+    _documento(client)
+    headers = _token(client)
+
+    def explode(paths, scope, session_id=None, source_type=None, guardrail_log=None):
+        raise RuntimeError("índice corrompido")
+
+    monkeypatch.setattr(client.documents.rag, "ingest_paths", explode)
+
+    client.post("/api/admin/rag/ingest", headers=headers)
+    job = _aguarda_conclusao(client, headers)
+    assert job["state"] == "error"
+    assert "índice corrompido" in job["error"]
 
 
 def test_ingestao_aceita_selecao_de_arquivos(client, monkeypatch):
     _documento(client, nome="aws-2025.txt")
     _documento(client, nome="azure-2025.txt")
     chamadas = _duplo_de_ingestao(client, monkeypatch)
+    headers = _token(client)
 
     resposta = client.post(
-        "/api/admin/rag/ingest", headers=_token(client), json={"files": ["azure-2025.txt"]}
+        "/api/admin/rag/ingest", headers=headers, json={"files": ["azure-2025.txt"]}
     )
-    assert resposta.status_code == 200
+    assert resposta.status_code == 202
+    _aguarda_conclusao(client, headers)
     assert [caminho.rsplit("/", 1)[-1] for caminho in chamadas[0]] == ["azure-2025.txt"]
 
 
@@ -179,8 +283,8 @@ def test_selecao_de_arquivo_inexistente_devolve_404(client, monkeypatch):
 
 def test_diretorio_vazio_responde_sem_erro(client):
     corpo = client.post("/api/admin/rag/ingest", headers=_token(client)).json()
-    assert corpo["chunks"] == 0
-    assert corpo["files_processed"] == 0
+    assert corpo["state"] == "idle"
+    assert corpo["result"] is None
     assert "data/pdf" in corpo["message"]
 
 

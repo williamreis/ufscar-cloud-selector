@@ -351,8 +351,24 @@ existindo, com o mesmo pipeline e a mesma senha.
 
 | Rota | O que faz |
 | --- | --- |
-| `GET /api/admin/rag/status` | inventário: arquivos em `data/pdf`, documentos já ingeridos, estado do índice, trechos por provedor |
-| `POST /api/admin/rag/ingest` | executa a ingestão; com `{"files": [...]}`, só os arquivos indicados |
+| `GET /api/admin/rag/status` | inventário: arquivos em `data/pdf`, documentos já ingeridos, estado do índice, trechos por provedor, mais o job em curso |
+| `POST /api/admin/rag/ingest` | **inicia** a ingestão e responde `202` na hora; com `{"files": [...]}`, só os arquivos indicados |
+| `GET /api/admin/rag/ingest` | estado do job (rota leve, própria para polling de poucos em poucos segundos) |
+
+**A ingestão não é síncrona, e não pode ser.** Indexar a base inteira leva
+minutos; o nginx do frontend corta em 300s (`proxy_read_timeout` em
+`frontend/nginx.conf`), e a resposta síncrona virava **504 na tela enquanto o
+backend seguia indexando** — o pior dos dois mundos, porque o administrador via
+"falhou" e podia disparar tudo de novo. Agora a rota inicia o trabalho e o painel
+acompanha; um `POST` durante uma ingestão em curso responde `409` em vez de
+enfileirar uma segunda.
+
+Os arquivos são processados **um por vez**: é o que torna o progresso real (`3 de
+12`, com o nome do arquivo) e o que mantém indexado o que já terminou se o
+processo cair no meio. O estado do job vive em memória, num processo só —
+reiniciar o backend perde o acompanhamento, não o que já foi indexado. Como o
+job também vem no `/rag/status`, recarregar a página no meio da ingestão
+reencontra o trabalho em curso.
 
 O inventário cruza **três fontes que podem discordar**, e mostra a discordância
 em vez de deduzir uma da outra:
@@ -375,9 +391,11 @@ administrador:
 A seleção por nome passa por `guardrails.resolve_within`: um nome vindo da
 requisição não alcança arquivo fora de `data/pdf`.
 
-Os diretórios (`data/pdf`, `data/upload`) e o pipeline compartilhado saíram do
-`main.py` para `backend/app/documents.py` — `main` importa o router de `admin`, e
-as duas pontas precisam da mesma função de ingestão.
+Os diretórios (`data/pdf`, `data/upload`), o pipeline compartilhado e o job
+saíram do `main.py` para `backend/app/documents.py` — `main` importa o router de
+`admin`, e as duas pontas precisam da mesma função de ingestão. O `/control` usa
+as mesmas rotas do painel; `POST /api/documents/ingest-global` continua existindo
+e continua síncrono, para uso por linha de comando, onde esperar não é problema.
 
 ## Testes
 
