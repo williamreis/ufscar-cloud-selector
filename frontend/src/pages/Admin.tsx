@@ -886,22 +886,22 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
         </div>
       )}
 
-      {result && (
+      {(result || job?.message) && (
         <div className="mt-4 space-y-2">
           <div
             role="status"
             className={
               "rounded-2xl border px-4 py-3 text-sm " +
-              (result.chunks > 0
+              (result && result.chunks > 0
                 ? "border-emerald-300 bg-emerald-50 text-emerald-800"
                 : "border-slate-300 bg-slate-50 text-slate-700")
             }
           >
             {job?.message ||
-              `${result.chunks} trecho(s) de ${result.files_processed} arquivo(s) ` +
+              `${result?.chunks ?? 0} trecho(s) de ${result?.files_processed ?? 0} arquivo(s) ` +
                 (running ? "indexado(s) até agora." : "indexado(s).")}
           </div>
-          {result.errors.length > 0 && (
+          {result && result.errors.length > 0 && (
             <div className="rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
               <p className="mb-1 font-semibold">
                 {result.errors.length} arquivo(s) não puderam ser indexados:
@@ -913,7 +913,7 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
               </ul>
             </div>
           )}
-          {result.guardrail_events && result.guardrail_events.length > 0 && (
+          {result?.guardrail_events && result.guardrail_events.length > 0 && (
             <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
               <p className="mb-1 font-semibold">Eventos de guardrail nesta ingestão:</p>
               <ul className="list-disc space-y-0.5 pl-5">
