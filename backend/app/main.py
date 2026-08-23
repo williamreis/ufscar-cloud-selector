@@ -34,7 +34,8 @@ from guardrails import (
     validate_upload,
 )
 from llm.prompts import registered_versions
-from preferences import explain_preferences
+import query_refinement
+from preferences import explain_preferences, sanitize_qa_pairs
 from reporting import build_synthesis, dimension_performance
 from providers_data import PROVIDERS, PROVIDER_SCORES_PROVENANCE
 from rag.metadata import SCOPE_GLOBAL, evaluation_scope
@@ -134,20 +135,23 @@ async def recommend(q: QuestionnaireResponse):
     methodology = get_methodology()
     weight_set = weights_from_answers(q.answers_by_question(), criteria_weights, methodology)
 
-    # 4) LLM redige a justificativa a partir das respostas dissertativas e dos
-    #    pesos já calculados. Ele não altera nenhum número: o cálculo permanece
-    #    determinístico e reprodutível a partir das respostas fechadas.
-    #    O texto do gestor passa pelos guardrails de entrada antes de chegar ao
-    #    prompt, e entra encapsulado como dado não confiável (§23.5 e §24).
+    # 4) Guardrails de entrada sobre o texto do gestor, uma vez só (§23.2–§23.5).
+    #    O resultado abastece os dois consumidores desse texto — a justificativa
+    #    e o refinamento das consultas —, para que a mesma credencial não seja
+    #    registrada duas vezes no log de auditoria.
     try:
-        notes, llm_run = await explain_preferences(
-            qa_pairs=q.qa_for_llm(),
-            relevance=relevance,
-            criteria_weights=criteria_weights,
-            guardrail_log=guardrail_log,
-        )
+        safe_qa_pairs = sanitize_qa_pairs(q.qa_for_llm(), guardrail_log)
     except GuardrailRejection as exc:
         raise HTTPException(status_code=422, detail=exc.event.reason) from exc
+
+    # 4a) LLM redige a justificativa a partir das respostas dissertativas e dos
+    #     pesos já calculados. Ela não altera nenhum número: o cálculo permanece
+    #     determinístico e reprodutível a partir das respostas fechadas.
+    notes, llm_run = await explain_preferences(
+        qa_pairs=safe_qa_pairs,
+        relevance=relevance,
+        criteria_weights=criteria_weights,
+    )
     llm_runs.append(llm_run.as_dict())
 
     # 5) Só entram no ranking os provedores com base documental indexada.
@@ -178,12 +182,27 @@ async def recommend(q: QuestionnaireResponse):
     #    normalização vem no passo seguinte.
     session_id = getattr(q, "session_id", None) or None
     weighted_indicators = indicators_for(weight_set, methodology)
+
+    # 6a) Bloco E → refinamento das consultas (§4.5.1). Os requisitos
+    #     institucionais descritos pelo gestor viram termos de busca associados
+    #     aos indicadores já definidos. Eles direcionam a recuperação e nada
+    #     mais: os pesos das dimensões e os pesos locais já foram calculados
+    #     acima, a partir dos blocos A–D, e não são revisitados.
+    query_hints, refinement_run = await query_refinement.refine_queries(
+        qa_pairs=safe_qa_pairs,
+        indicators=weighted_indicators,
+        guardrail_log=guardrail_log,
+    )
+    if refinement_run is not None:
+        llm_runs.append(refinement_run.as_dict())
+
     extraction = await evidence.extract_performances(
         providers=evaluated,
         indicators=weighted_indicators,
         methodology=methodology,
         session_id=session_id,
         guardrail_log=guardrail_log,
+        query_hints=query_hints,
     )
     llm_runs.extend(extraction.llm_runs)
     rag_audit.extend(extraction.rag_audit)

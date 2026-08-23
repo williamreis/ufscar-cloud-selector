@@ -19,13 +19,13 @@ O agente recebe as respostas do gestor ao questionário, organizado em cinco blo
 | Bloco | Perguntas | Tipo | Uso |
 | --- | --- | --- | --- |
 | A – Sustentabilidade | 1–5 | relevância (1–5) | relevância dos indicadores da dimensão |
-| A | 6 | dissertativa | contexto para a justificativa |
+| A | 6 | dissertativa | justificativa + refinamento das consultas do RAG |
 | B – Desempenho operacional | 7–10 | relevância (1–5) | relevância dos indicadores da dimensão |
-| B | 11 | dissertativa | contexto para a justificativa |
+| B | 11 | dissertativa | justificativa + refinamento das consultas do RAG |
 | C – Segurança da informação | 12–15 | relevância (1–5) | relevância dos indicadores da dimensão |
-| C | 16 | dissertativa | contexto para a justificativa |
+| C | 16 | dissertativa | justificativa + refinamento das consultas do RAG |
 | D – Comparações par-a-par | 17–19 | dimensão prioritária + intensidade | **única fonte dos pesos entre as dimensões** |
-| E – Avaliação global | 20–25 | dissertativas | requisitos obrigatórios e perfil desejado por dimensão |
+| E – Avaliação global | 20–25 | dissertativas | requisitos institucionais → **termos de busca por indicador** (§4.5.1); nunca pesos |
 
 As escalas dos blocos A/B/C e D são deliberadamente separadas: a escala 1–5 mede
 a **relevância individual** de um indicador dentro de uma dimensão, enquanto a
@@ -256,10 +256,31 @@ permite refazer a conta dos pesos à mão.
     PerformanceInput → normalização (§9) → agregação (§12)
 
 A consulta é montada **por indicador**, a partir do campo `search_terms` de
-`indicators.json` (o Quadro 27 em forma de dado). Os mesmos termos acompanham o
-indicador dentro do prompt: a §5.2 os descreve como orientadores "na construção
-das consultas **e na recuperação das evidências documentais**", que são duas
-etapas, não uma.
+`indicators.json` (o Quadro 27 em forma de dado). Não existe mais consulta por
+dimensão: a §4.4 determina que "o processo de recuperação não ocorre de forma
+aberta ou desvinculada dos critérios da pesquisa", e uma busca por "segurança da
+informação" em geral é exatamente isso. Uma consulta por (provedor × indicador),
+`top_k` baixo, filtrada pelo provedor no índice.
+
+Os mesmos termos acompanham o indicador dentro do prompt: a §5.2 os descreve como
+orientadores "na construção das consultas **e na recuperação das evidências
+documentais**", que são duas etapas, não uma.
+
+**Refinamento pelo Bloco E (§4.5.1).** Os requisitos institucionais que o gestor
+descreve em texto livre passam por `PROMPT_QUERY_REFINEMENT_V1`, um prompt
+auxiliar que os associa aos indicadores já definidos e devolve termos de busca.
+Os termos entram **no fim** da consulta, depois dos da pesquisa, no máximo quatro
+por indicador e 60 caracteres cada — refinar é ajustar o foco de uma consulta que
+já existe, não trocá-la. A ordem importa porque o vetor da consulta é a média do
+que está nela.
+
+O limite da §4.5.1 — "não alteram os pesos das dimensões calculados pelo AHP nem
+os pesos locais dos indicadores" — é estrutural, não uma verificação: a saída do
+prompt é `{indicator_id, terms}`, e o único consumidor é `rag.query_for_indicator`.
+Não há campo de peso nem caminho até o cálculo. Falha do prompt não bloqueia a
+avaliação; as buscas seguem com os termos da pesquisa. Os termos acrescentados
+ficam gravados à parte, em `rag_queries.refined_terms`, para que o registro diga
+o que veio da pesquisa e o que veio do gestor.
 
 A interpretação é uma chamada por (provedor × dimensão), com a lista fechada de
 indicadores daquela dimensão, as unidades esperadas dos quantitativos e as
@@ -479,6 +500,7 @@ docker run --rm -v "$PWD/backend:/app" -w /app ufscar-cloud-selector-backend pyt
 | `test_ahp_reference.py` | **fixture obrigatória da §6.5** (1/5/7/3 → 0.724/0.193/0.083, λmax 3.066, CI 0.033, CR 0.057), divergência entre métodos, matriz circular |
 | `test_domain_weights.py` | coeficientes, "não sei" ≠ 0, somas locais/globais = 1, dimensão sem resposta pede revisão, mudança de escala por config, validação da configuração |
 | `test_domain_normalization.py` | benefício e minimização, divisão indefinida, rubrica, conjunto `V` comum, `NOT_FOUND` ≠ 0, renormalização, contribuições, empate |
+| `test_query_refinement.py` | Bloco E → termos de busca: termos entram na consulta e depois dos da pesquisa, indicador inventado descartado, termo longo cortado, deduplicação, falha não bloqueia, schema sem campo de peso |
 | `test_evidence_extraction.py` | consulta por indicador, validação da saída da LLM (fonte inventada, categoria fora da rubrica, quantitativo sem valor), unidades divergentes, omissão e indisponibilidade → `NOT_FOUND`, evidência → ranking ponta a ponta |
 | `test_recommend_pipeline.py` | integração do endpoint: guardrails no fluxo, ranking vindo das evidências, RAG por indicador, isolamento do prompt de extração, pesos de indicador, versões, estado, limitações, gravação da auditoria |
 

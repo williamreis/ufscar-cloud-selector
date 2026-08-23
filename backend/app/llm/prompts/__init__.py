@@ -102,6 +102,7 @@ def registered_versions() -> Dict[str, str]:
 # Os imports abaixo populam o registro; ficam no fim para não haver ciclo com `register`.
 from llm.prompts import preference_notes  # noqa: E402,F401
 from llm.prompts import evidence_extraction  # noqa: E402,F401
+from llm.prompts import query_refinement  # noqa: E402,F401
 
 __all__ = [
     "Prompt",
