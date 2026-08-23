@@ -111,15 +111,18 @@ def test_consulta_usa_o_nome_e_os_termos_do_indicador(disponibilidade):
     assert "uptime" in consulta and "SLA" in consulta
 
 
-def test_consulta_nao_despeja_a_lista_inteira_de_termos(metodologia):
-    """Consulta com 15 siglas aponta para o assunto, não para o indicador."""
+def test_consulta_leva_todos_os_termos_do_quadro_27(metodologia):
+    """
+    §5.2: os termos do Quadro 27 são "elementos orientadores na construção das
+    consultas". A diretriz não prevê recorte, e uma versão anterior truncava em 8.
+    """
     import rag
-    from rag.queries import MAX_SEARCH_TERMS
 
     indicador = metodologia.by_id("sustainability_carbon_emissions")
-    assert len(indicador.search_terms) > MAX_SEARCH_TERMS
+    assert len(indicador.search_terms) > 8  # o caso que o recorte anterior afetava
     consulta = rag.query_for_indicator(indicador)
-    assert consulta.count(",") <= MAX_SEARCH_TERMS
+    for termo in indicador.search_terms:
+        assert termo in consulta
 
 
 # --- Validação da saída da LLM (§19) ---------------------------------------
@@ -213,6 +216,71 @@ def test_partial_fica_fora_do_conjunto_comparavel(disponibilidade, metodologia):
     finding = _validar(_bruto(evidence_status="PARTIAL"), disponibilidade, metodologia)
     assert finding.status == STATUS_PARTIAL
     assert finding.to_performance().is_usable is False
+
+
+# --- Unidade conforme o indicador (§5.4 e Quadro 22) ------------------------
+
+
+def test_unidade_fora_das_esperadas_e_recusada(metodologia):
+    """
+    §5.4: a validação da saída evita que "informações fora do formato esperado
+    sejam incorporadas ao processo de avaliação". A unidade é parte do formato.
+    """
+    log = GuardrailLog()
+    carbono = metodologia.by_id("sustainability_carbon_emissions")
+    bruto = _bruto(
+        indicator_id="sustainability_carbon_emissions",
+        value=12000.0,
+        unit="tCO2e",
+    )
+    finding = _validar(bruto, carbono, metodologia, log=log)
+
+    assert finding.status == STATUS_INVALID
+    assert any(e["rule_id"] == "EVIDENCE_UNEXPECTED_UNIT" for e in log.as_dicts())
+
+
+def test_emissao_absoluta_nao_entra_como_intensidade(metodologia):
+    """
+    O caso concreto: o Quadro 22 define o CUE como emissão dividida pela energia
+    dos equipamentos. Um total em tCO2e passa pela normalização por minimização
+    sem erro e faz o provedor maior perder por ser maior.
+    """
+    carbono = metodologia.by_id("sustainability_carbon_emissions")
+    assert "tCO2e" not in carbono.expected_units
+    assert all("/" in u for u in carbono.expected_units), (
+        "as unidades do CUE são de intensidade (massa por energia), não de total"
+    )
+
+
+@pytest.mark.parametrize(
+    "unidade,aceita",
+    [("gCO2e/kWh", True), ("kgCO2e/kWh", True), ("tCO2e", False), ("%", False)],
+)
+def test_unidades_do_carbono(metodologia, unidade, aceita):
+    from evidence import _unit_is_expected
+
+    carbono = metodologia.by_id("sustainability_carbon_emissions")
+    assert _unit_is_expected(unidade, carbono) is aceita
+
+
+def test_sinonimo_de_unidade_e_aceito(metodologia):
+    """Reconhecer que "percent" e "%" são a mesma unidade não é converter grandeza."""
+    from evidence import _unit_is_expected
+
+    disponibilidade = metodologia.by_id("performance_availability")
+    assert _unit_is_expected("percent", disponibilidade)
+    assert _unit_is_expected("%", disponibilidade)
+    assert not _unit_is_expected("ms", disponibilidade)
+
+
+def test_indicador_sem_unidades_declaradas_aceita_qualquer(metodologia):
+    """Lista vazia é "não foi especificado", não "nada é aceito"."""
+    from dataclasses import replace
+
+    from evidence import _unit_is_expected
+
+    sem_lista = replace(metodologia.by_id("performance_latency"), expected_units=())
+    assert _unit_is_expected("qualquer coisa", sem_lista)
 
 
 # --- Comparabilidade entre alternativas (§4.4.1.1) --------------------------

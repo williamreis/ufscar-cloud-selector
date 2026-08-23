@@ -113,12 +113,10 @@
       "data_type": "quantitative",
       "direction": "minimize",
       "expected_units": [
-        "tCO2e",
         "gCO2e/kWh",
-        "ratio",
-        "CUE"
+        "kgCO2e/kWh"
       ],
-      "_todo": "Tratado como quantitativo (CUE / intensidade de carbono). Boa parte da evidência publicada é de compromisso (net-zero), não de valor — se a dissertação optar por avaliar compromissos, isto vira qualitativo com rubrica própria.",
+      "_todo": "Tratado como quantitativo (CUE / intensidade de carbono), conforme a fórmula do Quadro 22: emissão de gases de efeito estufa dividida pela energia dos equipamentos. Emissão absoluta (tCO2e) NÃO é aceita — comparar totais puniria o provedor maior por ser maior. Em aberto: boa parte da evidência publicada é compromisso (net-zero), não valor; se a dissertação optar por avaliar compromissos, isto vira qualitativo.",
       "search_terms": [
         "CUE",
         "Carbon Usage Effectiveness",
@@ -143,7 +141,8 @@
           "Emissão/intensidade de carbono – CUE/SCI"
         ],
         "evidence_example": "CUE = valor divulgado"
-      }
+      },
+      "_nota": "Unidades de INTENSIDADE, não de total. O Quadro 22 define CUE como emissão de gases de efeito estufa dividida pela energia dos equipamentos; um total absoluto em tCO2e não é essa métrica, e compará-lo entre provedores puniria o maior por ser maior. g e kg por kWh diferem por mil: a guarda de unidades divergentes retira o indicador se os provedores publicarem em escalas diferentes, em vez de converter em silêncio."
     },
     {
       "id": "sustainability_ewaste_management",
