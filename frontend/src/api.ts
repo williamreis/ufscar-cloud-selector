@@ -61,14 +61,6 @@ export async function ingestSession(sessionId: string): Promise<IngestResult> {
   return asJson<IngestResult>(res);
 }
 
-export async function ingestGlobal(): Promise<IngestResult> {
-  const res = await fetch(`${API_BASE}/documents/ingest-global`, {
-    method: "POST",
-    headers: adminHeaders(),
-  });
-  return asJson<IngestResult>(res);
-}
-
 // ===========================================================================
 // Área de gestão
 //
