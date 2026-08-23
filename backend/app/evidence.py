@@ -206,9 +206,10 @@ def _retrieve_for_indicator(
     indicator: IndicatorConfig,
     provider: Mapping[str, str],
     session_id: Optional[str],
+    extra_terms: Sequence[str] = (),
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Consulta o índice para um par (provedor, indicador). Bloqueante."""
-    query_text = rag.query_for_indicator(indicator, provider.get("name"))
+    query_text = rag.query_for_indicator(indicator, provider.get("name"), extra_terms)
     hits = rag.search(query_text, CHUNKS_PER_INDICATOR, session_id, provider["id"])
     return query_text, hits
 
@@ -581,6 +582,7 @@ async def extract_performances(
     session_id: Optional[str] = None,
     guardrail_log: Optional[GuardrailLog] = None,
     concurrency: int = DEFAULT_CONCURRENCY,
+    query_hints: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> ExtractionResult:
     """
     Recupera e interpreta as evidências de todos os provedores.
@@ -588,6 +590,10 @@ async def extract_performances(
     `indicators` são os que efetivamente receberam peso: indicador sem peso não
     é consultado, porque o gestor não deu base para ele entrar na comparação e
     consultá-lo só gastaria chamada.
+
+    `query_hints` são os termos que o Bloco E acrescentou a cada consulta
+    (§4.5.1). Entram no fim da consulta, depois dos termos da pesquisa, e não
+    tocam em mais nada do pipeline.
     """
     log = guardrail_log if guardrail_log is not None else GuardrailLog()
     resultado = ExtractionResult()
@@ -600,11 +606,13 @@ async def extract_performances(
         por_dimensao.setdefault(indicator.dimension, []).append(indicator)
 
     # -- 1. Recuperação, um par (provedor × indicador) por consulta -----------
+    hints = dict(query_hints or {})
     chunks_por_par: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for provider in providers:
         for indicator in indicators:
+            extras = tuple(hints.get(indicator.id, ()))
             query_text, hits = await run_in_threadpool(
-                _retrieve_for_indicator, indicator, provider, session_id
+                _retrieve_for_indicator, indicator, provider, session_id, extras
             )
             chunks_por_par[(provider["id"], indicator.id)] = hits
             resultado.rag_audit.append(
@@ -613,6 +621,9 @@ async def extract_performances(
                     "indicator_id": indicator.id,
                     "provider_id": provider["id"],
                     "query_text": query_text,
+                    # Separa o que veio da pesquisa do que veio do Bloco E: sem
+                    # isso, a consulta gravada não diz por que ficou como ficou.
+                    "refined_terms": list(extras),
                     "top_k": CHUNKS_PER_INDICATOR,
                     "chunks": hits,
                 }
