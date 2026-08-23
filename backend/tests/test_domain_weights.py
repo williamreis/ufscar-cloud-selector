@@ -157,7 +157,7 @@ def test_denominador_zerado_pede_revisao_em_vez_de_dividir_por_zero(tmp_path):
             "values": {"irrelevante": 0, "nao_sei": None},
             "labels": {IRRELEVANTE: "irrelevante", NAO_SEI: "nao_sei"},
         },
-        "default_rubrics": {"ordinal_4": {"mode": "ordinal", "categories": {"level_1": 1.0}}},
+        "default_rubrics": {"nivel_atendimento": {"mode": "ordinal", "categories": {"completo": 1.0}}},
         "ahp": {"weight_method": "column_mean", "random_index": {"3": 0.58}},
     }
     caminho = tmp_path / "scales.json"
@@ -263,7 +263,7 @@ def test_mudar_a_escala_muda_os_pesos_sem_tocar_no_codigo(tmp_path, metodologia)
                 NAO_SEI: "nao_sei",
             },
         },
-        "default_rubrics": {"ordinal_4": {"mode": "ordinal", "categories": {"level_1": 1.0}}},
+        "default_rubrics": {"nivel_atendimento": {"mode": "ordinal", "categories": {"completo": 1.0}}},
         "ahp": {"weight_method": "column_mean", "random_index": {"3": 0.58}},
     }
     caminho = tmp_path / "scales.json"
@@ -350,7 +350,7 @@ def test_fingerprint_muda_quando_a_escala_muda(tmp_path, metodologia):
                     "values": {"decisivo": 9},
                     "labels": {DECISIVO: "decisivo"},
                 },
-                "default_rubrics": {"ordinal_4": {"mode": "ordinal", "categories": {"level_1": 1.0}}},
+                "default_rubrics": {"nivel_atendimento": {"mode": "ordinal", "categories": {"completo": 1.0}}},
                 "ahp": {"weight_method": "column_mean", "random_index": {"3": 0.58}},
             }
         ),

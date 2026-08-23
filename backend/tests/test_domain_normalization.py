@@ -123,7 +123,7 @@ def test_sem_valores_nao_ha_evidencia():
 
 def test_categoria_permitida_vira_valor_pela_rubrica(metodologia):
     indicador = metodologia.by_id("security_iam")
-    valor, status = value_from_category(indicador, "level_4")
+    valor, status = value_from_category(indicador, "completo")
     assert valor == pytest.approx(1.0)
     assert status == STATUS_FOUND
 

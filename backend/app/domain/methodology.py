@@ -47,27 +47,57 @@ class MethodologyConfigError(ValueError):
 
 @dataclass(frozen=True)
 class Rubric:
-    """Rubrica de um indicador qualitativo (§10.2)."""
+    """
+    Rubrica de um indicador qualitativo — o Quadro 23 da dissertação.
+
+    `categories` mapeia nível de atendimento → valor. **O valor pode ser nulo**,
+    e essa é a linha "Não identificado" do quadro, que registra "—" e não zero:
+
+        "O nível 'Não identificado' não recebe valor igual a zero, uma vez que a
+        ausência de evidência não é interpretada como desempenho inferior do
+        provedor. Nessa situação, aplica-se o procedimento definido na Seção
+        4.4.1.3 para informações ausentes."
+
+    Por isso `value_for` não basta para decidir o que fazer com uma categoria:
+    `None` significa duas coisas diferentes (categoria desconhecida × categoria
+    conhecida sem valor), e quem precisa distingui-las usa `is_allowed`.
+
+    `conditions` é a coluna "Condição da evidência". Não entra em cálculo — é o
+    texto que o prompt de extração entrega à LLM para que ela classifique pela
+    regra da pesquisa, e não por um rótulo solto.
+    """
 
     name: str
     mode: str
-    categories: Mapping[str, float]
+    categories: Mapping[str, Optional[float]]
+    conditions: Mapping[str, str] = field(default_factory=dict)
+
+    def is_allowed(self, category: Optional[str]) -> bool:
+        """A categoria pertence à allowlist da rubrica (§19)?"""
+        return category is not None and category in self.categories
 
     def value_for(self, category: Optional[str]) -> Optional[float]:
         """
         Valor numérico de uma categoria.
 
-        Categoria fora da allowlist devolve None — a §19 exige que a categoria
-        pertença à lista permitida do indicador, e uma categoria desconhecida é
-        saída inválida, não uma nota a estimar.
+        Devolve `None` tanto para categoria desconhecida quanto para categoria
+        sem valor ("Não identificado"). Use `is_allowed` para separar os casos.
         """
         if category is None:
             return None
         return self.categories.get(category)
 
+    def condition_for(self, category: str) -> Optional[str]:
+        return self.conditions.get(category)
+
     @property
     def allowed_categories(self) -> Tuple[str, ...]:
         return tuple(self.categories)
+
+    @property
+    def scored_categories(self) -> Tuple[str, ...]:
+        """Categorias que produzem valor — as que o Quadro 23 pontua."""
+        return tuple(k for k, v in self.categories.items() if v is not None)
 
 
 @dataclass(frozen=True)
@@ -201,14 +231,37 @@ def _build_rubrics(raw: Mapping[str, Any]) -> Dict[str, Rubric]:
         categories = definition.get("categories")
         if not isinstance(categories, dict) or not categories:
             continue
-        try:
-            valores = {str(k): float(v) for k, v in categories.items()}
-        except (TypeError, ValueError) as exc:
+        valores: Dict[str, Optional[float]] = {}
+        for chave, valor in categories.items():
+            if valor is None:
+                # Linha "Não identificado" do Quadro 23: registra "—", não zero.
+                valores[str(chave)] = None
+                continue
+            try:
+                valores[str(chave)] = float(valor)
+            except (TypeError, ValueError) as exc:
+                raise MethodologyConfigError(
+                    f"Rubrica {name!r}: categoria {chave!r} tem valor não numérico ({valor!r})."
+                ) from exc
+
+        if not any(v is not None for v in valores.values()):
             raise MethodologyConfigError(
-                f"Rubrica {name!r} tem categoria com valor não numérico: {exc}."
-            ) from exc
+                f"Rubrica {name!r} não tem nenhuma categoria com valor: nada seria pontuável."
+            )
+
+        condicoes = definition.get("conditions") or {}
+        desconhecidas = set(condicoes) - set(valores)
+        if desconhecidas:
+            raise MethodologyConfigError(
+                f"Rubrica {name!r}: `conditions` descreve categorias inexistentes: "
+                f"{', '.join(sorted(desconhecidas))}."
+            )
+
         rubrics[name] = Rubric(
-            name=name, mode=str(definition.get("mode", "ordinal")), categories=valores
+            name=name,
+            mode=str(definition.get("mode", "ordinal")),
+            categories=valores,
+            conditions={str(k): str(v) for k, v in condicoes.items()},
         )
     if not rubrics:
         raise MethodologyConfigError("Nenhuma rubrica válida em default_rubrics.")
