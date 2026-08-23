@@ -2,8 +2,9 @@
 Justificativa textual das preferências declaradas.
 
 Camada fina entre o questionário e a LLM. Existe para que `main.py` não precise
-conhecer prompt, schema nem cliente — e para concentrar o tratamento do texto do
-gestor antes de ele chegar ao modelo:
+conhecer prompt, schema nem cliente.
+
+O tratamento do texto do gestor segue esta ordem:
 
     limite de tamanho → varredura de credenciais → heurística de injeção →
     encapsulamento em <USER_CONTEXT> → prompt versionado → saída validada
@@ -12,15 +13,22 @@ A ordem importa. A varredura de credenciais roda **antes** do encapsulamento
 porque o que ela remove não pode chegar ao prompt; a heurística de injeção roda
 depois dela e só registra, porque quem contém a injeção é o encapsulamento, não
 a detecção (§23.5).
+
+Os três primeiros passos são de `sanitize_qa_pairs`, que **o chamador executa**.
+Antes ela rodava aqui dentro; passou para fora quando o mesmo texto do gestor
+ganhou um segundo destino (o refinamento das consultas da §4.5.1). Saneá-lo duas
+vezes não o deixaria mais limpo — só gravaria o mesmo evento de guardrail duas
+vezes, e um registro de auditoria que conta a mesma credencial duas vezes é pior
+que inútil.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from guardrails import GuardrailLog, enforce_length, format_qa_pairs, wrap_user_context
 from guardrails import injection, secrets
 from guardrails.events import STAGE_INPUT_TEXT
-from llm import STATUS_OK, get_llm_client
+from llm import get_llm_client
 from llm.client import LLMRunRecord
 from llm.prompts import get as get_prompt
 from llm.schemas import PreferenceNotes
@@ -59,10 +67,12 @@ async def explain_preferences(
     qa_pairs: List[Dict[str, str]],
     relevance: Dict[str, float],
     criteria_weights: Dict[str, float],
-    guardrail_log: Optional[GuardrailLog] = None,
 ) -> Tuple[str, LLMRunRecord]:
     """
     Pede à LLM apenas a justificativa textual.
+
+    **Espera `qa_pairs` já saneados** por `sanitize_qa_pairs` — o chamador roda a
+    varredura uma vez e distribui o resultado; ver a nota no topo do módulo.
 
     Os pesos saem do AHP e não passam pelo modelo — o cálculo continua
     determinístico, reprodutível e auditável (§2.1).
@@ -71,8 +81,7 @@ async def explain_preferences(
     volta vazio e o motivo fica no registro: a alternativa seria aproveitar a
     resposta malformada, que é exatamente o que a §25 proíbe.
     """
-    log = guardrail_log if guardrail_log is not None else GuardrailLog()
-    safe_pairs = sanitize_qa_pairs(qa_pairs, log)
+    safe_pairs = qa_pairs
 
     prompt = get_prompt(PROMPT_ID).render(
         criteria_weights=str({k: round(float(v), 4) for k, v in criteria_weights.items()}),

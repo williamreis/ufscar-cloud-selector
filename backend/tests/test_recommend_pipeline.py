@@ -57,9 +57,9 @@ def client(tmp_path, monkeypatch):
         ],
     )
 
-    # LLM: devolve JSON válido sem tocar a rede. São dois prompts distintos no
-    # fluxo — a justificativa das preferências e a extração de evidências —, e o
-    # duplo responde a cada um conforme o seu contrato.
+    # LLM: devolve JSON válido sem tocar a rede. São três prompts distintos no
+    # fluxo — justificativa das preferências, refinamento das consultas e
+    # extração de evidências —, e o duplo responde a cada um pelo seu contrato.
     class FakeMessage:
         def __init__(self, content):
             self.content = content
@@ -76,6 +76,7 @@ def client(tmp_path, monkeypatch):
             self.chamadas = []
             self.ultima_chamada = None
             self.ultima_extracao = None
+            self.ultimo_refinamento = None
 
         @staticmethod
         def _extracao(messages) -> str:
@@ -104,11 +105,25 @@ def client(tmp_path, monkeypatch):
                 )
             return json.dumps({"findings": achados})
 
+        @staticmethod
+        def _refinamento(messages) -> str:
+            """Associa um termo do texto do gestor ao primeiro indicador da lista."""
+            ids = re.findall(r'indicator_id: "([^"]+)"', str(messages))
+            if not ids:
+                return json.dumps({"refinements": []})
+            return json.dumps(
+                {"refinements": [{"indicator_id": ids[0], "terms": ["backup diário"]}]}
+            )
+
         async def ainvoke(self, messages):
             self.chamadas.append(messages)
-            if "PESOS DAS DIMENSÕES" in str(messages):
+            texto = str(messages)
+            if "PESOS DAS DIMENSÕES" in texto:
                 self.ultima_chamada = messages
                 return FakeMessage('{"notes":"A prioridade recai sobre segurança."}')
+            if "REQUISITOS E CARACTERÍSTICAS INSTITUCIONAIS" in texto:
+                self.ultimo_refinamento = messages
+                return FakeMessage(self._refinamento(messages))
             self.ultima_extracao = messages
             return FakeMessage(self._extracao(messages))
 
@@ -401,6 +416,67 @@ def test_consulta_rag_e_feita_por_indicador(client):
     consultas = {q["indicator_id"] for q in submission["rag_queries"]}
     assert "performance_availability" in consultas
     assert "security_certifications" in consultas
+
+
+def test_nenhuma_consulta_e_feita_por_dimensao(client):
+    """
+    §4.4: "o processo de recuperação não ocorre de forma aberta ou desvinculada
+    dos critérios da pesquisa". Toda consulta gravada pertence a um indicador.
+    """
+    corpo = client.post("/api/recommend", json=_envio()).json()
+    submission = client.db.get_submission(corpo["submission_id"])
+    assert submission["rag_queries"]
+    assert all(q["indicator_id"] for q in submission["rag_queries"])
+
+
+def test_bloco_e_refina_as_consultas(client):
+    """§4.5.1: os requisitos institucionais direcionam a recuperação."""
+    client.post("/api/recommend", json=_envio())
+
+    # O prompt auxiliar recebeu o texto do gestor, encapsulado como dado.
+    _papel, conteudo = client.fake_model.ultimo_refinamento[1]
+    assert "<USER_CONTEXT>" in conteudo
+    assert "backup diário" in conteudo
+
+
+def test_termos_do_bloco_e_ficam_registrados_a_parte(client):
+    """
+    §5.4 (rastreabilidade): o registro precisa dizer o que veio da pesquisa e o
+    que veio do gestor. A consulta concatenada, sozinha, não distingue os dois.
+    """
+    corpo = client.post("/api/recommend", json=_envio()).json()
+    submission = client.db.get_submission(corpo["submission_id"])
+
+    refinadas = [q for q in submission["rag_queries"] if q["refined_terms"]]
+    assert refinadas, "nenhuma consulta registrou termo vindo do Bloco E"
+    for consulta in refinadas:
+        for termo in consulta["refined_terms"]:
+            assert termo in consulta["query_text"]
+
+
+def test_refinamento_nao_altera_pesos(client):
+    """
+    §4.5.1: as informações do Bloco E "não alteram os pesos das dimensões
+    calculados pelo AHP nem os pesos locais dos indicadores".
+
+    Dois envios idênticos nas questões fechadas, com textos livres diferentes,
+    precisam produzir exatamente os mesmos pesos nos três níveis.
+    """
+    sem_texto = client.post("/api/recommend", json=_envio("")).json()
+    com_texto = client.post(
+        "/api/recommend",
+        json=_envio("Exigimos replicação geográfica e RPO de 15 minutos."),
+    ).json()
+
+    assert com_texto["criteria_weights"] == sem_texto["criteria_weights"]
+
+    def pesos(corpo):
+        return {
+            i["indicator_id"]: (i["local_weight"], i["global_weight"], i["effective_weight"])
+            for i in corpo["indicator_weights"]["indicators"]
+        }
+
+    assert pesos(com_texto) == pesos(sem_texto)
 
 
 def test_llm_nao_recebe_peso_nem_ranking_na_extracao(client):

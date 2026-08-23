@@ -318,12 +318,17 @@ class RagQuery(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
-    # `indicator_id` fica nulo enquanto a consulta for por dimensão (ver
-    # rag/queries.py); passa a ser preenchido quando a §16 entrar na Fase 1.
+    # `indicator_id` só fica nulo em registros gravados antes da §16, quando a
+    # consulta ainda era por dimensão. Hoje toda consulta pertence a um indicador.
     dimension: Mapped[Optional[str]] = mapped_column(String(40), index=True)
     indicator_id: Mapped[Optional[str]] = mapped_column(String(80), index=True)
     provider_id: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     query_text: Mapped[str] = mapped_column(Text)
+    # Termos que o Bloco E acrescentou a esta consulta (§4.5.1), separados por
+    # `; `. Ficam à parte do `query_text` porque a pergunta que o relatório
+    # precisa responder é "o que veio da pesquisa e o que veio do gestor?" — e a
+    # consulta concatenada não distingue as duas origens.
+    refined_terms: Mapped[Optional[str]] = mapped_column(Text)
     top_k: Mapped[Optional[int]] = mapped_column(Integer)
     result_count: Mapped[Optional[int]] = mapped_column(Integer)
 
@@ -428,6 +433,9 @@ _ADDITIVE_COLUMNS: Dict[str, Dict[str, str]] = {
         "questions_hash": "VARCHAR(64)",
         "algorithm_version": "VARCHAR(40)",
         "status": "VARCHAR(40)",
+    },
+    "rag_queries": {
+        "refined_terms": "TEXT",
     },
 }
 
@@ -577,11 +585,13 @@ def save_submission(
         )
 
     for query in rag_queries or []:
+        refinados = query.get("refined_terms") or []
         record = RagQuery(
             dimension=query.get("dimension"),
             indicator_id=query.get("indicator_id"),
             provider_id=query.get("provider_id"),
             query_text=query.get("query_text", ""),
+            refined_terms="; ".join(refinados) if refinados else None,
             top_k=query.get("top_k"),
             result_count=len(query.get("chunks") or []),
         )
@@ -863,6 +873,9 @@ def get_submission(submission_id: str) -> Optional[Dict[str, Any]]:
                     "indicator_id": q.indicator_id,
                     "provider_id": q.provider_id,
                     "query_text": q.query_text,
+                    "refined_terms": (
+                        q.refined_terms.split("; ") if q.refined_terms else []
+                    ),
                     "top_k": q.top_k,
                     "result_count": q.result_count,
                     "chunks": [

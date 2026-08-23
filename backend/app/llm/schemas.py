@@ -53,6 +53,31 @@ class PreferenceNotes(BaseModel):
     notes: str = Field(description="Justificativa textual das prioridades declaradas.")
 
 
+class IndicatorQueryHint(BaseModel):
+    """
+    Termos de busca que o texto do gestor sugeriu para **um** indicador (§4.5.1).
+
+    Não há campo de peso, prioridade ou relevância aqui, e isso é o ponto: a
+    §4.5.1 determina que o Bloco E não altere os pesos das dimensões nem os pesos
+    locais dos indicadores. Sem campo, não há caminho.
+    """
+
+    indicator_id: str
+    terms: List[str] = Field(default_factory=list)
+
+
+class QueryRefinement(BaseModel):
+    """
+    Saída de `PROMPT_QUERY_REFINEMENT_V1`.
+
+    Lista vazia é resposta válida: o gestor pode não ter escrito nada aplicável,
+    e forçar o modelo a produzir termos nesse caso seria pedir que inventasse
+    requisito.
+    """
+
+    refinements: List[IndicatorQueryHint] = Field(default_factory=list)
+
+
 class IndicatorEvidence(BaseModel):
     """
     Evidência documental encontrada para **um** indicador de **um** provedor.
@@ -150,5 +175,7 @@ __all__ = [
     "EVIDENCE_STATUSES",
     "DimensionEvidence",
     "IndicatorEvidence",
+    "IndicatorQueryHint",
     "PreferenceNotes",
+    "QueryRefinement",
 ]
