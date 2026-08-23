@@ -20,13 +20,17 @@
   ],
   "version": "1",
   "status": "provisional",
-
   "dimensions": {
-    "sustainability": { "name": "Sustentabilidade" },
-    "performance": { "name": "Desempenho Operacional" },
-    "security": { "name": "Segurança da Informação" }
+    "sustainability": {
+      "name": "Sustentabilidade"
+    },
+    "performance": {
+      "name": "Desempenho Operacional"
+    },
+    "security": {
+      "name": "Segurança da Informação"
+    }
   },
-
   "indicators": [
     {
       "id": "sustainability_energy_efficiency",
@@ -35,15 +39,38 @@
       "question_id": "sust_q1",
       "data_type": "quantitative",
       "direction": "minimize",
-      "expected_units": ["ratio", "PUE"],
+      "expected_units": [
+        "ratio",
+        "PUE"
+      ],
       "_todo": "Direção fixada pelo PUE (menor é melhor). Se a dissertação adotar o DCiE como métrica primária, direction passa a 'benefit'.",
       "search_terms": [
-        "PUE", "Power Usage Effectiveness", "DCiE",
-        "Data Center Infrastructure Efficiency", "A-PUE",
-        "eficiência energética", "energy efficiency",
-        "consumo energético", "power consumption",
+        "PUE",
+        "Power Usage Effectiveness",
+        "DCiE",
+        "Data Center Infrastructure Efficiency",
+        "A-PUE",
+        "eficiência energética",
+        "energy efficiency",
+        "consumo energético",
+        "power consumption",
         "data center energy efficiency"
-      ]
+      ],
+      "coverage": {
+        "quadro_22": [
+          "PUE",
+          "DCiE",
+          "ERF",
+          "A-PUE",
+          "EFM"
+        ],
+        "quadro_24": [
+          "Eficiência energética - PUE",
+          "DCiE",
+          "ERF"
+        ],
+        "evidence_example": "PUE = 1,20"
+      }
     },
     {
       "id": "sustainability_renewable_energy",
@@ -52,12 +79,31 @@
       "question_id": "sust_q2",
       "data_type": "quantitative",
       "direction": "benefit",
-      "expected_units": ["%", "percent"],
+      "expected_units": [
+        "%",
+        "percent"
+      ],
       "search_terms": [
-        "renewable energy", "renewable electricity", "clean energy",
-        "carbon-free energy", "energia renovável", "solar", "wind",
-        "renewable power", "clean energy procurement"
-      ]
+        "renewable energy",
+        "renewable electricity",
+        "clean energy",
+        "carbon-free energy",
+        "energia renovável",
+        "solar",
+        "wind",
+        "renewable power",
+        "clean energy procurement"
+      ],
+      "coverage": {
+        "quadro_22": [
+          "GEC"
+        ],
+        "quadro_24": [
+          "Energia renovável"
+        ],
+        "evidence_example": "90% de energia renovável",
+        "_nota": "GEC (Energia Verde / Energia total da instalação) é lido como métrica de energia renovável, não de eficiência. Leitura do autor sobre o Quadro 22."
+      }
     },
     {
       "id": "sustainability_carbon_emissions",
@@ -66,14 +112,38 @@
       "question_id": "sust_q3",
       "data_type": "quantitative",
       "direction": "minimize",
-      "expected_units": ["tCO2e", "gCO2e/kWh", "ratio", "CUE"],
+      "expected_units": [
+        "tCO2e",
+        "gCO2e/kWh",
+        "ratio",
+        "CUE"
+      ],
       "_todo": "Tratado como quantitativo (CUE / intensidade de carbono). Boa parte da evidência publicada é de compromisso (net-zero), não de valor — se a dissertação optar por avaliar compromissos, isto vira qualitativo com rubrica própria.",
       "search_terms": [
-        "CUE", "Carbon Usage Effectiveness", "SCI", "carbon intensity",
-        "carbon footprint", "GHG emissions", "greenhouse gas",
-        "emissões de carbono", "gases de efeito estufa", "CO2",
-        "net-zero", "carbon neutral", "decarbonization"
-      ]
+        "CUE",
+        "Carbon Usage Effectiveness",
+        "SCI",
+        "carbon intensity",
+        "carbon footprint",
+        "GHG emissions",
+        "greenhouse gas",
+        "emissões de carbono",
+        "gases de efeito estufa",
+        "CO2",
+        "net-zero",
+        "carbon neutral",
+        "decarbonization"
+      ],
+      "coverage": {
+        "quadro_22": [
+          "CUE",
+          "SCI"
+        ],
+        "quadro_24": [
+          "Emissão/intensidade de carbono – CUE/SCI"
+        ],
+        "evidence_example": "CUE = valor divulgado"
+      }
     },
     {
       "id": "sustainability_ewaste_management",
@@ -83,10 +153,25 @@
       "data_type": "qualitative",
       "rubric": "nivel_atendimento",
       "search_terms": [
-        "e-waste", "electronic waste", "recycling", "reciclagem",
-        "descarte eletrônico", "disposal", "refurbishment",
-        "recondicionamento", "reuse", "reutilização"
-      ]
+        "e-waste",
+        "electronic waste",
+        "recycling",
+        "reciclagem",
+        "descarte eletrônico",
+        "disposal",
+        "refurbishment",
+        "recondicionamento",
+        "reuse",
+        "reutilização"
+      ],
+      "coverage": {
+        "quadro_22": [],
+        "quadro_24": [
+          "Práticas ambientais e compromissos"
+        ],
+        "evidence_example": "programa de reciclagem e descarte documentado",
+        "_nota": "Vem do questionário (Bloco A, questão 4) e da RSL de sustentabilidade; não tem linha própria no Quadro 22."
+      }
     },
     {
       "id": "sustainability_circularity",
@@ -96,13 +181,25 @@
       "data_type": "qualitative",
       "rubric": "nivel_atendimento",
       "search_terms": [
-        "circular economy", "economia circular", "circularidade",
-        "ciclo de vida", "life cycle", "component reuse",
-        "reutilização de componentes", "refurbishment",
+        "circular economy",
+        "economia circular",
+        "circularidade",
+        "ciclo de vida",
+        "life cycle",
+        "component reuse",
+        "reutilização de componentes",
+        "refurbishment",
         "prolongamento da vida útil"
-      ]
+      ],
+      "coverage": {
+        "quadro_22": [],
+        "quadro_24": [
+          "Práticas ambientais e compromissos"
+        ],
+        "evidence_example": "recondicionamento e reutilização de componentes",
+        "_nota": "Vem do questionário (Bloco A, questão 5); não tem linha própria no Quadro 22."
+      }
     },
-
     {
       "id": "performance_availability",
       "dimension": "performance",
@@ -110,12 +207,29 @@
       "question_id": "perf_q1",
       "data_type": "quantitative",
       "direction": "benefit",
-      "expected_units": ["%", "percent"],
+      "expected_units": [
+        "%",
+        "percent"
+      ],
       "search_terms": [
-        "availability", "uptime", "SLA", "service level agreement",
-        "disponibilidade", "downtime", "service level",
+        "availability",
+        "uptime",
+        "SLA",
+        "service level agreement",
+        "disponibilidade",
+        "downtime",
+        "service level",
         "monthly uptime percentage"
-      ]
+      ],
+      "coverage": {
+        "quadro_22": [
+          "Disponibilidade"
+        ],
+        "quadro_24": [
+          "Disponibilidade"
+        ],
+        "evidence_example": "SLA 99,99%"
+      }
     },
     {
       "id": "performance_support",
@@ -126,10 +240,24 @@
       "rubric": "nivel_atendimento",
       "_todo": "Categorias resolvidas pelo Quadro 23. Em aberto: se a dissertação optar por comparar tempo de resposta contratual, vira quantitativo com direction 'minimize'.",
       "search_terms": [
-        "technical support", "suporte técnico", "support SLA",
-        "incident response", "response time", "resolution time",
-        "tempo de resposta", "24/7 support", "severity level"
-      ]
+        "technical support",
+        "suporte técnico",
+        "support SLA",
+        "incident response",
+        "response time",
+        "resolution time",
+        "tempo de resposta",
+        "24/7 support",
+        "severity level"
+      ],
+      "coverage": {
+        "quadro_22": [],
+        "quadro_24": [
+          "Suporte técnico"
+        ],
+        "evidence_example": "suporte 24×7, resposta em 15 min",
+        "_nota": "Vem do questionário (Bloco B, questão 8) e do Quadro 24; não tem linha própria no Quadro 22."
+      }
     },
     {
       "id": "performance_latency",
@@ -138,11 +266,29 @@
       "question_id": "perf_q3",
       "data_type": "quantitative",
       "direction": "minimize",
-      "expected_units": ["ms", "milliseconds"],
+      "expected_units": [
+        "ms",
+        "milliseconds"
+      ],
       "search_terms": [
-        "latency", "latência", "network latency", "response time",
-        "tempo médio de resposta", "round trip time", "RTT"
-      ]
+        "latency",
+        "latência",
+        "network latency",
+        "response time",
+        "tempo médio de resposta",
+        "round trip time",
+        "RTT"
+      ],
+      "coverage": {
+        "quadro_22": [
+          "Tempo de resposta (latência)"
+        ],
+        "quadro_24": [
+          "Latência",
+          "Tempo de resposta"
+        ],
+        "evidence_example": "25 ms"
+      }
     },
     {
       "id": "performance_scalability",
@@ -152,12 +298,29 @@
       "data_type": "qualitative",
       "rubric": "nivel_atendimento",
       "search_terms": [
-        "scalability", "elasticity", "escalabilidade", "elasticidade",
-        "autoscaling", "horizontal scaling", "vertical scaling",
-        "dynamic provisioning", "throughput", "compute capacity"
-      ]
+        "scalability",
+        "elasticity",
+        "escalabilidade",
+        "elasticidade",
+        "autoscaling",
+        "horizontal scaling",
+        "vertical scaling",
+        "dynamic provisioning",
+        "throughput",
+        "compute capacity"
+      ],
+      "coverage": {
+        "quadro_22": [
+          "Escalabilidade",
+          "Elasticidade"
+        ],
+        "quadro_24": [
+          "Escalabilidade",
+          "Elasticidade"
+        ],
+        "evidence_example": "autoscaling, capacidade máxima"
+      }
     },
-
     {
       "id": "security_certifications",
       "dimension": "security",
@@ -167,10 +330,32 @@
       "rubric": "nivel_atendimento",
       "_nota": "A §41.1 e o GUARDRAIL 5 valem aqui: mencionar uma norma não é possuir a certificação. A rubrica precisa distinguir os dois casos.",
       "search_terms": [
-        "ISO/IEC 27001", "ISO/IEC 27017", "ISO/IEC 27018", "SOC 2", "SOC 1",
-        "CSA STAR", "NIST", "compliance", "conformidade", "certification",
-        "certificação", "auditoria", "audit report", "attestation"
-      ]
+        "ISO/IEC 27001",
+        "ISO/IEC 27017",
+        "ISO/IEC 27018",
+        "SOC 2",
+        "SOC 1",
+        "CSA STAR",
+        "NIST",
+        "compliance",
+        "conformidade",
+        "certification",
+        "certificação",
+        "auditoria",
+        "audit report",
+        "attestation"
+      ],
+      "coverage": {
+        "quadro_22": [
+          "Frameworks de segurança",
+          "Nível de segurança"
+        ],
+        "quadro_24": [
+          "Certificações e frameworks"
+        ],
+        "evidence_example": "ISO/IEC 27001, CSA STAR",
+        "_nota": "\"Nível de segurança (RSA)\" do Quadro 22 é lido aqui como conformidade documentada, não como algoritmo verificável em relatório público."
+      }
     },
     {
       "id": "security_backup_recovery",
@@ -181,11 +366,26 @@
       "rubric": "nivel_atendimento",
       "_todo": "Categorias resolvidas pelo Quadro 23. Em aberto: a §8.1 admite RPO/RTO como quantitativos 'quando comparáveis' — se a dissertação fixar isso, o indicador se desdobra.",
       "search_terms": [
-        "backup", "disaster recovery", "recuperação de desastres",
-        "business continuity", "continuidade de negócio",
-        "RPO", "RTO", "recovery point objective", "recovery time objective",
-        "replication", "failover"
-      ]
+        "backup",
+        "disaster recovery",
+        "recuperação de desastres",
+        "business continuity",
+        "continuidade de negócio",
+        "RPO",
+        "RTO",
+        "recovery point objective",
+        "recovery time objective",
+        "replication",
+        "failover"
+      ],
+      "coverage": {
+        "quadro_22": [],
+        "quadro_24": [
+          "Backup e recuperação de desastres"
+        ],
+        "evidence_example": "RPO/RTO, replicação regional",
+        "_nota": "Vem do questionário (Bloco C, questão 13) e do Quadro 24; não tem linha própria no Quadro 22."
+      }
     },
     {
       "id": "security_iam",
@@ -195,11 +395,30 @@
       "data_type": "qualitative",
       "rubric": "nivel_atendimento",
       "search_terms": [
-        "IAM", "identity and access management", "MFA", "2FA",
-        "multi-factor authentication", "autenticação multifator",
-        "SSO", "single sign-on", "RBAC", "ABAC", "least privilege",
-        "access control", "controle de acesso", "authorization"
-      ]
+        "IAM",
+        "identity and access management",
+        "MFA",
+        "2FA",
+        "multi-factor authentication",
+        "autenticação multifator",
+        "SSO",
+        "single sign-on",
+        "RBAC",
+        "ABAC",
+        "least privilege",
+        "access control",
+        "controle de acesso",
+        "authorization"
+      ],
+      "coverage": {
+        "quadro_22": [
+          "Controle de acesso (MFA)"
+        ],
+        "quadro_24": [
+          "IAM/MFA/controle de acesso"
+        ],
+        "evidence_example": "MFA, RBAC, ABAC"
+      }
     },
     {
       "id": "security_encryption",
@@ -210,11 +429,109 @@
       "rubric": "nivel_atendimento",
       "_nota": "A §41.1 vale aqui: SHA-1/SHA-2 são funções de hash, não criptografia. A presença de 'SHA-256' não sustenta 'dados criptografados'.",
       "search_terms": [
-        "encryption at rest", "encryption in transit",
-        "criptografia em repouso", "criptografia em trânsito",
-        "AES", "AES-256", "TLS", "key management",
-        "gerenciamento de chaves", "KMS", "HSM", "customer managed keys"
-      ]
+        "encryption at rest",
+        "encryption in transit",
+        "criptografia em repouso",
+        "criptografia em trânsito",
+        "AES",
+        "AES-256",
+        "TLS",
+        "key management",
+        "gerenciamento de chaves",
+        "KMS",
+        "HSM",
+        "customer managed keys"
+      ],
+      "coverage": {
+        "quadro_22": [
+          "Criptografia (tipos)"
+        ],
+        "quadro_24": [
+          "Criptografia/proteção de dados"
+        ],
+        "evidence_example": "AES-256, TLS, encryption at rest"
+      }
     }
-  ]
+  ],
+  "not_operationalized": {
+    "_leia_me": [
+      "Linhas dos Quadros 22 e 24 que não se tornaram indicadores da plataforma.",
+      "",
+      "A §4.4 registra a redução e dá os critérios: 'a disponibilidade das",
+      "informações, a possibilidade de verificação documental e a comparabilidade",
+      "entre os provedores. Alguns indicadores identificados na literatura",
+      "dependem de dados internos dos data centers ou não são divulgados de",
+      "maneira suficientemente homogênea para permitir sua utilização em uma",
+      "avaliação comparativa baseada em documentos públicos.'",
+      "",
+      "Cada linha abaixo cita qual desses critérios a excluiu. `reason` usa um",
+      "vocabulário fechado, validado no carregamento — para que 'ficou de fora'",
+      "nunca seja uma afirmação sem justificativa.",
+      "",
+      "Esta lista não é decorativa: é o que permite conferir os Quadros 22 e 24",
+      "`aliases` cobre a mesma linha aparecendo com nomes diferentes nos dois quadros.",
+      "contra o produto. Indicador que sai daqui tem de entrar em `indicators`."
+    ],
+    "_motivos": {
+      "dados_internos": "Depende de dados internos do data center, não publicados",
+      "divulgacao_heterogenea": "Não é divulgado de forma homogênea entre os provedores",
+      "sem_verificacao_documental": "Não é verificável em documentação pública",
+      "agregado_em_outro_indicador": "Coberto por outro indicador do conjunto operacional",
+      "sem_pergunta_no_questionario": "Não tem pergunta correspondente nos Blocos A, B ou C, logo não recebe peso local"
+    },
+    "items": [
+      {
+        "name": "Estabilidade",
+        "dimension": "performance",
+        "source": "Quadro 22",
+        "reason": "dados_internos",
+        "_nota": "Variação do desempenho ao longo do tempo exige medição contínua; não há valor equivalente em documento público."
+      },
+      {
+        "name": "Capacidade",
+        "dimension": "performance",
+        "source": "Quadro 22",
+        "reason": "divulgacao_heterogenea",
+        "_nota": "Recursos computacionais disponíveis são descritos por catálogo de instâncias, sem número comparável entre provedores."
+      },
+      {
+        "name": "Rendimento e Eficiência (throughput)",
+        "dimension": "performance",
+        "source": "Quadro 22 e Quadro 24",
+        "reason": "dados_internos",
+        "_nota": "Throughput depende de carga e configuração; nenhum provedor publica valor contratual comparável. O Quadro 22 a chama de 'Rendimento e Eficiência'; o Quadro 24, de 'Throughput'.",
+        "aliases": [
+          "Throughput"
+        ]
+      },
+      {
+        "name": "Confiabilidade",
+        "dimension": "performance",
+        "source": "Quadro 22 e Quadro 24",
+        "reason": "agregado_em_outro_indicador",
+        "_nota": "A taxa de operação sem falhas publicada é o próprio SLA de disponibilidade, já coberto por performance_availability."
+      },
+      {
+        "name": "Machine Learning em segurança (NTAF)",
+        "dimension": "security",
+        "source": "Quadro 22",
+        "reason": "sem_verificacao_documental",
+        "_nota": "O uso de ML na detecção é descrito em material de marketing, sem evidência auditável de aderência."
+      },
+      {
+        "name": "Blockchain em segurança",
+        "dimension": "security",
+        "source": "Quadro 22",
+        "reason": "sem_verificacao_documental",
+        "_nota": "Registro distribuído aparece como serviço ofertado, não como controle de segurança do próprio provedor."
+      },
+      {
+        "name": "Monitoramento/auditoria",
+        "dimension": "security",
+        "source": "Quadro 24",
+        "reason": "sem_pergunta_no_questionario",
+        "_nota": "O Quadro 24 traz a linha, mas o Bloco C do Quadro 25 tem quatro perguntas e nenhuma sobre monitoramento — sem pergunta não há coeficiente de relevância, logo não há peso local."
+      }
+    ]
+  }
 }
