@@ -488,6 +488,35 @@ def test_pesos_de_indicador_sao_persistidos(client):
     assert certificacoes["is_valid_for_comparison"] is True
 
 
+def test_recomendacao_acompanha_os_tres_niveis_de_peso(client):
+    """
+    §4.4.1.5: "A recomendação é acompanhada dos pesos das dimensões, dos pesos
+    locais e globais dos indicadores […]". §5.5 repete a exigência ao descrever a
+    auditoria. Os três níveis precisam estar na resposta, por indicador.
+    """
+    corpo = client.post("/api/recommend", json=_envio()).json()
+    linhas = corpo["indicator_weights"]["indicators"]
+    assert len(linhas) == 13
+
+    for linha in linhas:
+        assert {"local_weight", "dimension_weight", "global_weight"} <= set(linha)
+
+    # Equação 3: os pesos locais de cada dimensão somam 1.
+    for dimensao in corpo["criteria_weights"]:
+        locais = [
+            l["local_weight"] for l in linhas
+            if l["dimension"] == dimensao and l["local_weight"] is not None
+        ]
+        assert sum(locais) == pytest.approx(1.0)
+
+    # Equação 4: peso global = peso da dimensão × peso local.
+    for linha in linhas:
+        if linha["global_weight"] is None:
+            continue
+        esperado = linha["dimension_weight"] * linha["local_weight"]
+        assert linha["global_weight"] == pytest.approx(esperado)
+
+
 def test_ranking_vem_das_evidencias_documentais(client):
     """
     §4.4.1: o desempenho de cada provedor sai da extração documental, não de

@@ -197,6 +197,23 @@ def canonical_unit(unit: Optional[str]) -> Optional[str]:
     return _UNIT_ALIASES.get(limpo, limpo)
 
 
+def _unit_is_expected(unit: Optional[str], indicator: IndicatorConfig) -> bool:
+    """
+    A unidade informada está entre as que o indicador admite?
+
+    A comparação é sobre a forma canônica dos dois lados, para que "percent" e "%"
+    contem como a mesma unidade — reconhecer sinônimo não é converter grandeza.
+
+    Indicador sem `expected_units` aceita qualquer unidade: a ausência da lista é
+    "não foi especificado", não "nada é aceito".
+    """
+    esperadas = {canonical_unit(u) for u in indicator.expected_units}
+    esperadas.discard(None)
+    if not esperadas:
+        return True
+    return canonical_unit(unit) in esperadas
+
+
 # ---------------------------------------------------------------------------
 # Recuperação
 # ---------------------------------------------------------------------------
@@ -238,12 +255,6 @@ def _dedupe_chunks(chunks: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-# Termos do Quadro 27 enviados ao modelo. A lista completa de um indicador chega
-# a 15; o prompt já carrega os trechos recuperados, e uma lista longa de siglas
-# compete com eles pela atenção em vez de orientar a leitura.
-MAX_PROMPT_TERMS = 6
-
-
 def describe_indicators(indicators: Sequence[IndicatorConfig]) -> str:
     """
     Lista de indicadores para o prompt, com o que cada um admite como resposta.
@@ -279,7 +290,10 @@ def describe_indicators(indicators: Sequence[IndicatorConfig]) -> str:
                 partes.append(
                     f"    - {categoria}: {condicao}" if condicao else f"    - {categoria}"
                 )
-        termos = [t for t in indicator.search_terms[:MAX_PROMPT_TERMS] if t and t.strip()]
+        # Termos do Quadro 27, inteiros: a §5.2 os apresenta como orientadores
+        # "na construção das consultas e na recuperação das evidências", e o
+        # recorte que existia aqui não vinha da diretriz.
+        termos = [t for t in indicator.search_terms if t and t.strip()]
         if termos:
             partes.append(f"  termos relacionados: {', '.join(termos)}")
         linhas.append("\n".join(partes))
@@ -360,6 +374,23 @@ def _validate_finding(
             return rejeitar(
                 "EVIDENCE_MISSING_VALUE",
                 "Indicador quantitativo sem valor numérico na resposta.",
+            )
+
+        # §5.4: "a validação das estruturas retornadas busca evitar que informações
+        # fora do formato esperado sejam incorporadas diretamente ao processo de
+        # avaliação". A unidade é parte do formato — um valor na unidade errada é
+        # numericamente válido e metodologicamente outro indicador.
+        #
+        # O caso que motiva a regra: o Quadro 22 define o CUE como razão (emissão
+        # de gases de efeito estufa ÷ energia dos equipamentos). Um total absoluto
+        # em tCO2e passa pela normalização sem erro e faz o provedor maior perder
+        # por ser maior, não por ser menos eficiente.
+        if indicator.expected_units and not _unit_is_expected(raw.unit, indicator):
+            informada = raw.unit or "nenhuma"
+            return rejeitar(
+                "EVIDENCE_UNEXPECTED_UNIT",
+                f"Unidade {informada!r} fora das esperadas para o indicador "
+                f"({', '.join(indicator.expected_units)}).",
             )
         status = STATUS_FOUND if raw.evidence_status == "FOUND" else partial_status
         return Finding(
@@ -692,7 +723,6 @@ __all__ = [
     "CHUNKS_PER_INDICATOR",
     "DEFAULT_CONCURRENCY",
     "MAX_CHUNKS_PER_CALL",
-    "MAX_PROMPT_TERMS",
     "PROMPT_ID",
     "ExtractionResult",
     "Finding",

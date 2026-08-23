@@ -32,13 +32,18 @@ Três decisões que valem registrar:
 
 from typing import Any, Optional, Sequence
 
-# Quantos termos do `search_terms` entram na consulta. A lista completa de um
-# indicador chega a 15 termos; concatenar todos dilui o vetor da consulta, que
-# passa a apontar para o "assunto geral" em vez do indicador.
-MAX_SEARCH_TERMS = 8
+# Os termos da pesquisa entram INTEIROS. A §5.2 apresenta o Quadro 27 como o
+# conjunto de "termos, métricas e expressões associados aos indicadores da
+# pesquisa, utilizados como elementos orientadores na construção das consultas e
+# na recuperação das evidências documentais" — sem prever recorte.
+#
+# Uma versão anterior truncava em 8, por receio de diluir o vetor da consulta com
+# siglas demais. O receio é técnico e legítimo, mas a diretriz não o autoriza, e
+# quem decide o conjunto de termos é o Quadro 27.
 
-# Teto dos termos vindos do Bloco E. Baixo por construção: refinamento é ajuste
-# de foco, não redefinição do que se procura.
+# Teto dos termos vindos do Bloco E. Este permanece, e por motivo diferente: a
+# §4.5.1 dá ao Bloco E a função de *refinar* a consulta, e sem limite o texto do
+# gestor deslocaria o critério da pesquisa em vez de ajustá-lo.
 MAX_EXTRA_TERMS = 4
 
 
@@ -57,7 +62,7 @@ def query_for_indicator(
     """
     termos: Sequence[str] = tuple(getattr(indicator, "search_terms", ()) or ())
     partes = [str(getattr(indicator, "name", "") or "").strip()]
-    partes.extend(t.strip() for t in termos[:MAX_SEARCH_TERMS] if t and t.strip())
+    partes.extend(t.strip() for t in termos if t and t.strip())
     partes.extend(t.strip() for t in extra_terms[:MAX_EXTRA_TERMS] if t and t.strip())
     consulta = ", ".join(p for p in partes if p)
     if provider_name:
@@ -65,4 +70,4 @@ def query_for_indicator(
     return consulta
 
 
-__all__ = ["MAX_EXTRA_TERMS", "MAX_SEARCH_TERMS", "query_for_indicator"]
+__all__ = ["MAX_EXTRA_TERMS", "query_for_indicator"]
