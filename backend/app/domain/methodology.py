@@ -115,6 +115,13 @@ class IndicatorConfig:
     rubric: Optional[Rubric] = None
     notes: Optional[str] = None
     pending_decision: Optional[str] = None
+    # Linhas dos Quadros 22 e 24 que este indicador operacionaliza, e o exemplo
+    # de evidência da coluna correspondente do Quadro 24. Não entra em cálculo:
+    # existe para que os quadros da dissertação possam ser conferidos contra o
+    # conjunto que o produto de fato avalia.
+    quadro_22: Tuple[str, ...] = ()
+    quadro_24: Tuple[str, ...] = ()
+    evidence_example: Optional[str] = None
 
     @property
     def is_quantitative(self) -> bool:
@@ -135,6 +142,44 @@ class IndicatorConfig:
             "expected_units": list(self.expected_units),
             "rubric": self.rubric.name if self.rubric else None,
             "pending_decision": self.pending_decision,
+            "quadro_22": list(self.quadro_22),
+            "quadro_24": list(self.quadro_24),
+            "evidence_example": self.evidence_example,
+        }
+
+
+@dataclass(frozen=True)
+class ExcludedIndicator:
+    """
+    Linha dos Quadros 22/24 que não virou indicador da plataforma (§4.4).
+
+    Existe para que "ficou de fora" seja uma afirmação com justificativa e não um
+    silêncio. O `reason` vem de um vocabulário fechado, derivado dos critérios que
+    a §4.4 enumera — disponibilidade, verificação documental e comparabilidade.
+    """
+
+    name: str
+    dimension: str
+    source: str
+    reason: str
+    note: Optional[str] = None
+    # A mesma linha aparece com nomes diferentes nos dois quadros — "Rendimento e
+    # Eficiência (throughput)" no 22 e "Throughput" no 24. Sem os apelidos, a
+    # conferência acusaria falta de registro onde há só diferença de redação.
+    aliases: Tuple[str, ...] = ()
+
+    @property
+    def all_names(self) -> Tuple[str, ...]:
+        return (self.name, *self.aliases)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "aliases": list(self.aliases),
+            "dimension": self.dimension,
+            "source": self.source,
+            "reason": self.reason,
+            "note": self.note,
         }
 
 
@@ -155,6 +200,8 @@ class Methodology:
     tie_break_tolerance: float
     partial_counts_as_comparable: bool
     indicators_version: str
+    not_operationalized: Tuple[ExcludedIndicator, ...] = ()
+    exclusion_reasons: Mapping[str, str] = field(default_factory=dict)
     sources: Mapping[str, str] = field(default_factory=dict)
     hashes: Mapping[str, Optional[str]] = field(default_factory=dict)
 
@@ -194,6 +241,24 @@ class Methodology:
         if key is None:
             return None, False
         return self.relevance_coefficients.get(key), True
+
+    def quadro_coverage(self) -> Dict[str, Tuple[str, ...]]:
+        """
+        Linhas dos Quadros 22 e 24 cobertas pelo conjunto operacional.
+
+        Serve à conferência dos quadros da dissertação: o que está aqui é o que o
+        produto avalia; o que está em `not_operationalized` é o que ficou fora,
+        com motivo. Uma linha em nenhum dos dois é uma lacuna de registro.
+        """
+        q22: List[str] = []
+        q24: List[str] = []
+        for indicator in self.indicators:
+            q22.extend(indicator.quadro_22)
+            q24.extend(indicator.quadro_24)
+        return {
+            "quadro_22": tuple(dict.fromkeys(q22)),
+            "quadro_24": tuple(dict.fromkeys(q24)),
+        }
 
     def fingerprint(self) -> Dict[str, Any]:
         """Bloco de versão da configuração metodológica, para o registro da avaliação."""
@@ -322,6 +387,10 @@ def _build_indicators(
                 )
             rubric = rubrics[rubric_name]
 
+        cobertura = entry.get("coverage") or {}
+        if not isinstance(cobertura, dict):
+            raise MethodologyConfigError(f"{indicator_id}: `coverage` não é um objeto.")
+
         question_id = entry.get("question_id")
         if question_id:
             if question_id in seen_questions:
@@ -343,12 +412,76 @@ def _build_indicators(
                 rubric=rubric,
                 notes=entry.get("_nota"),
                 pending_decision=entry.get("_todo"),
+                quadro_22=tuple(cobertura.get("quadro_22") or ()),
+                quadro_24=tuple(cobertura.get("quadro_24") or ()),
+                evidence_example=cobertura.get("evidence_example"),
             )
         )
 
     if not indicators:
         raise MethodologyConfigError("Nenhum indicador configurado.")
     return tuple(indicators)
+
+
+def _build_exclusions(
+    raw: Mapping[str, Any],
+    indicators: Tuple[IndicatorConfig, ...],
+) -> Tuple[Tuple[ExcludedIndicator, ...], Dict[str, str]]:
+    """
+    Valida o registro do que ficou fora do conjunto operacional (§4.4).
+
+    Duas checagens, e as duas existem porque este bloco só vale se estiver certo:
+
+      - **motivo fora do vocabulário falha.** Um motivo livre transformaria a
+        justificativa exigida pela §4.4 em texto solto que ninguém confere.
+
+      - **linha excluída que também está coberta falha.** Se um indicador
+        operacionaliza "Confiabilidade" e a lista diz que ela ficou de fora, uma
+        das duas afirmações é falsa, e a configuração não pode carregar sem que se
+        saiba qual.
+    """
+    motivos = {str(k): str(v) for k, v in (raw.get("_motivos") or {}).items()}
+    itens = raw.get("items") or []
+    if not isinstance(itens, list):
+        raise MethodologyConfigError("not_operationalized.items não é uma lista.")
+
+    cobertos = {nome.casefold() for i in indicators for nome in (*i.quadro_22, *i.quadro_24)}
+    excluidos: List[ExcludedIndicator] = []
+
+    for entry in itens:
+        if not isinstance(entry, dict):
+            raise MethodologyConfigError("Entrada de not_operationalized não é um objeto.")
+        nome = entry.get("name")
+        if not nome:
+            raise MethodologyConfigError("Entrada de not_operationalized sem `name`.")
+
+        motivo = entry.get("reason")
+        if motivos and motivo not in motivos:
+            raise MethodologyConfigError(
+                f"not_operationalized[{nome!r}]: motivo {motivo!r} fora do vocabulário "
+                f"({', '.join(sorted(motivos))})."
+            )
+
+        apelidos = tuple(str(a) for a in (entry.get("aliases") or ()))
+        for rotulo in (str(nome), *apelidos):
+            if rotulo.casefold() in cobertos:
+                raise MethodologyConfigError(
+                    f"not_operationalized[{nome!r}]: {rotulo!r} aparece na cobertura de um "
+                    "indicador. Uma das duas afirmações está errada."
+                )
+
+        excluidos.append(
+            ExcludedIndicator(
+                name=str(nome),
+                dimension=str(entry.get("dimension") or ""),
+                source=str(entry.get("source") or ""),
+                reason=str(motivo or ""),
+                note=entry.get("_nota"),
+                aliases=apelidos,
+            )
+        )
+
+    return tuple(excluidos), motivos
 
 
 def load_methodology(
@@ -407,6 +540,10 @@ def load_methodology(
     tie_break = scales_raw.get("tie_break") or {}
     evidence = scales_raw.get("evidence") or {}
 
+    excluidos, motivos = _build_exclusions(
+        indicators_raw.get("not_operationalized") or {}, indicators
+    )
+
     return Methodology(
         indicators=indicators,
         dimensions=dimensions,
@@ -423,6 +560,8 @@ def load_methodology(
         tie_break_tolerance=float(tie_break.get("tolerance", 1e-9)),
         partial_counts_as_comparable=bool(evidence.get("partial_counts_as_comparable", False)),
         indicators_version=str(indicators_raw.get("version", "1")),
+        not_operationalized=excluidos,
+        exclusion_reasons=motivos,
         sources={"indicators": str(indicators_path), "scales": str(scales_path)},
         hashes={
             "indicators": canonical_hash(indicators_raw),
@@ -448,6 +587,7 @@ def reload_methodology() -> Methodology:
 
 __all__ = [
     "DIRECTION_BENEFIT",
+    "ExcludedIndicator",
     "DIRECTION_MINIMIZE",
     "TYPE_QUALITATIVE",
     "TYPE_QUANTITATIVE",
