@@ -133,16 +133,33 @@ def value_from_category(
     """
     Converte uma categoria qualitativa em número pela rubrica do indicador (§10.1).
 
-    Categoria fora da allowlist devolve `INVALID`, não uma nota aproximada: a §19
-    exige que a categoria pertença à lista permitida, e "quase" não é um valor.
+    Três saídas, e a diferença entre elas é metodológica:
+
+      - **categoria pontuável** → `(valor, FOUND)`. O valor é o do Quadro 23.
+
+      - **categoria sem valor** → `(None, NOT_FOUND)`. É a linha "Não
+        identificado" do Quadro 23, que registra "—": a categoria é válida, o
+        modelo a escolheu corretamente, e o que ela significa é ausência de
+        evidência. Segue para o procedimento da §4.4.1.3 — nunca para zero, que
+        afirmaria desempenho inferior.
+
+      - **categoria fora da allowlist** → `(None, INVALID)`. A §19 exige que a
+        categoria pertença à lista permitida, e "quase" não é um valor.
+
+    As duas últimas levam o indicador ao mesmo destino no cálculo (fora do
+    conjunto comparável) e dizem coisas opostas ao gestor: "o documento não
+    sustenta" contra "o modelo respondeu fora das regras".
     """
     if indicator.rubric is None:
         return None, STATUS_INVALID
     if category is None:
         return None, STATUS_NOT_FOUND
+    if not indicator.rubric.is_allowed(category):
+        return None, STATUS_INVALID
     value = indicator.rubric.value_for(category)
     if value is None:
-        return None, STATUS_INVALID
+        # Categoria válida, sem valor: "Não identificado" (Quadro 23).
+        return None, STATUS_NOT_FOUND
     return value, STATUS_FOUND
 
 

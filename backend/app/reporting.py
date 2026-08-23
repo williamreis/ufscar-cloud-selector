@@ -122,6 +122,14 @@ def build_synthesis(
                     "original_value": finding.value,
                     "unit": finding.unit,
                     "category": finding.category,
+                    # Condição do Quadro 23 que justifica o nível atribuído. É a
+                    # regra pela qual a categoria foi escolhida — sem ela o
+                    # relatório mostra um rótulo e pede confiança.
+                    "category_condition": (
+                        indicator.rubric.condition_for(finding.category)
+                        if indicator.rubric and finding.category
+                        else None
+                    ),
                     "summary": finding.summary,
                     "rejection": finding.rejection,
                     "source_chunk_id": finding.source_chunk_id,

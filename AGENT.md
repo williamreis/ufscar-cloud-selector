@@ -231,6 +231,44 @@ Os três níveis são persistidos separadamente em `indicator_weights` (§7: nun
 sobrescrever um nível com outro). Guardar só o peso global tornaria impossível
 responder *por que* ele é o que é.
 
+#### Rubricas qualitativas — o Quadro 23
+
+`scales.json` traz as duas rubricas da dissertação. `nivel_atendimento` reproduz
+o Quadro 23 inteiro: os nomes dos níveis, a **condição da evidência** de cada um
+e o valor.
+
+| Nível | Condição da evidência | Valor |
+| --- | --- | --- |
+| `nao_identificado` | Não há evidência documental suficiente para confirmar o atendimento | — |
+| `baixo` | Evidência limitada, indicando atendimento parcial inicial ao indicador | 0,25 |
+| `moderado` | Evidência demonstra atendimento parcial ao indicador | 0,50 |
+| `alto` | Evidência demonstra atendimento substancial ao indicador | 0,75 |
+| `completo` | Evidência demonstra atendimento integral às condições previstas | 1,00 |
+
+Três consequências que o código faz valer:
+
+- **`nao_identificado` vale `null`, não zero.** O quadro registra "—" e o texto
+  logo abaixo é explícito: "não recebe valor igual a zero, uma vez que a ausência
+  de evidência não é interpretada como desempenho inferior do provedor. Nessa
+  situação, aplica-se o procedimento definido na Seção 4.4.1.3". `value_from_category`
+  devolve `NOT_FOUND` — o indicador sai do conjunto comparável, ninguém é punido.
+
+- **`nao_identificado` ≠ categoria desconhecida.** A primeira é resposta correta
+  do modelo (`NOT_FOUND`); a segunda é saída fora da allowlist (`INVALID`). As
+  duas excluem o indicador e dizem coisas opostas ao gestor.
+
+- **a condição vai para o prompt.** `describe_indicators` entrega à LLM o nível
+  *com a sua condição*. Sem isso, "escolha entre baixo, moderado, alto e
+  completo" não é regra — é rótulo solto, e a classificação vira opinião do
+  modelo. A condição volta no relatório (`category_condition`), como a
+  justificativa do nível atribuído.
+
+`binario` cobre o parágrafo final do quadro ("indicadores cuja natureza permita
+apenas verificar a existência de uma condição objetiva") e preserva a assimetria
+dele: `comprovado` = 1,00, `nao_atendido` = 0,00 **com evidência explícita de não
+atendimento**, e `nao_identificado` para o silêncio do documento — que não é
+nenhum dos dois. Nenhum indicador a usa hoje; ela existe porque o quadro a prevê.
+
 **Escala de relevância (TODO ACADÊMICO 01, decidido: `irrelevante` = 1).**
 
 | Resposta | Coeficiente |
@@ -513,6 +551,7 @@ docker run --rm -v "$PWD/backend:/app" -w /app ufscar-cloud-selector-backend pyt
 | `test_guardrails_text.py` | credenciais (detecção, mascaramento, modos), os 4 casos adversariais da §42.5, limite de texto, encapsulamento à prova de fechamento |
 | `test_llm_contract.py` | prompt versionado, recorte de JSON, retry único, `LLM_OUTPUT_INVALID`, provedor indisponível, registro de execução |
 | `test_versioning.py` | hash canônico do questionário, insensível a formatação e sensível a conteúdo, ausência do arquivo |
+| `test_rubrics.py` | fidelidade ao Quadro 23 (níveis, condições e valores), `nao_identificado` ≠ 0 e ≠ categoria inválida, assimetria do modo binário, validação da configuração, condição no prompt |
 | `test_rag_metadata.py` | ids determinísticos, ano lido do nome, página em base 0 vs humana, isolamento de escopo |
 | `test_db_migration.py` | esquema antigo → migração aditiva, envios preservados, blocos de auditoria novos |
 | `test_ahp_matrix.py` (porta) + `test_recommend_pipeline.py` | RC > 0,10 devolve 409 antes de qualquer chamada à LLM, aponta as comparações e o pior par, não grava o envio, e a correção recupera a avaliação |
