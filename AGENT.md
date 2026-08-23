@@ -231,6 +231,39 @@ Os três níveis são persistidos separadamente em `indicator_weights` (§7: nun
 sobrescrever um nível com outro). Guardar só o peso global tornaria impossível
 responder *por que* ele é o que é.
 
+#### Cobertura dos Quadros 22 e 24
+
+Os quadros da dissertação e o conjunto que o produto avalia **não coincidem**, e
+a divergência é registrada em vez de silenciada. O Quadro 24 lista
+"Monitoramento/auditoria", "Throughput" e "Confiabilidade"; o Quadro 22 lista
+ainda Estabilidade, Capacidade, Machine Learning e Blockchain. Nenhum desses
+vira indicador, porque **só pergunta fechada do Quadro 25 produz coeficiente de
+relevância** — sem pergunta não há peso local, e sem peso o indicador não entra
+na comparação.
+
+Na direção oposta, quatro indicadores avaliados não têm linha no Quadro 22:
+resíduos eletrônicos, circularidade, suporte técnico e backup/recuperação. Vêm do
+questionário e das RSLs.
+
+Cada indicador declara em `coverage` que linhas dos Quadros 22/24 operacionaliza
+e o exemplo de evidência da coluna correspondente. O que ficou de fora está em
+`not_operationalized`, com o motivo tirado do vocabulário que a §4.4 enumera
+(dados internos, divulgação heterogênea, sem verificação documental, agregado em
+outro indicador, sem pergunta no questionário).
+
+O carregamento recusa duas incoerências: motivo fora do vocabulário, e linha que
+aparece ao mesmo tempo coberta e excluída — se as duas afirmações coexistem, uma
+é falsa e não se sabe qual.
+
+```bash
+make quadros                                    # Quadro 24 e cobertura, em Markdown
+python scripts/generate_quadros.py --check      # falha se algo não está rastreado
+```
+
+Os quadros são **gerados da configuração**, não transcritos: `indicators.json` é
+a mesma fonte que o cálculo lê, então um indicador que entre ou saia do produto
+muda o quadro junto. `--check` serve à integração contínua.
+
 #### Rubricas qualitativas — o Quadro 23
 
 `scales.json` traz as duas rubricas da dissertação. `nivel_atendimento` reproduz
@@ -526,6 +559,19 @@ saíram do `main.py` para `backend/app/documents.py` — `main` importa o router
 as mesmas rotas do painel; `POST /api/documents/ingest-global` continua existindo
 e continua síncrono, para uso por linha de comando, onde esperar não é problema.
 
+## Documentos do repositório
+
+`RESUMO.md` descreve o produto para incorporação na dissertação. Ele é **coberto
+por testes** (`test_resumo.py`): tecnologia que sai do projeto não pode continuar
+citada lá, e os números que ele afirma — 25 perguntas, 5 níveis de relevância, 13
+indicadores, limiar 0,10, quantidade de prompts — são conferidos contra a
+configuração em vigor. A versão anterior descrevia Streamlit, Chroma e uma LLM
+que calculava os pesos; nada conferia, e por isso ninguém percebeu.
+
+O documento também carrega uma seção de **divergências conhecidas** com o texto
+atual da dissertação. Ela é a única parte do arquivo autorizada a citar
+tecnologia removida, e os testes a excluem da busca por termos banidos.
+
 ## Testes
 
 Os testes ficam em `backend/tests/` e **não tocam rede, LLM nem índice
@@ -551,6 +597,8 @@ docker run --rm -v "$PWD/backend:/app" -w /app ufscar-cloud-selector-backend pyt
 | `test_guardrails_text.py` | credenciais (detecção, mascaramento, modos), os 4 casos adversariais da §42.5, limite de texto, encapsulamento à prova de fechamento |
 | `test_llm_contract.py` | prompt versionado, recorte de JSON, retry único, `LLM_OUTPUT_INVALID`, provedor indisponível, registro de execução |
 | `test_versioning.py` | hash canônico do questionário, insensível a formatação e sensível a conteúdo, ausência do arquivo |
+| `test_resumo.py` | RESUMO.md descreve o produto que existe: não cita tecnologia removida, as citadas estão declaradas, questionário/prompts/limiares conferem com a configuração |
+| `test_quadro_coverage.py` | toda linha dos Quadros 22 e 24 tem destino declarado, conjunto operacional = perguntas fechadas, exclusões com motivo do vocabulário, recusa de registro incoerente, `--check` do gerador |
 | `test_rubrics.py` | fidelidade ao Quadro 23 (níveis, condições e valores), `nao_identificado` ≠ 0 e ≠ categoria inválida, assimetria do modo binário, validação da configuração, condição no prompt |
 | `test_rag_metadata.py` | ids determinísticos, ano lido do nome, página em base 0 vs humana, isolamento de escopo |
 | `test_db_migration.py` | esquema antigo → migração aditiva, envios preservados, blocos de auditoria novos |
