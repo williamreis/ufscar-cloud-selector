@@ -2,6 +2,8 @@
 Construção do modelo de chat por provedor (diretriz §35).
 
 Este é o **único** módulo do backend autorizado a perguntar qual é o provedor.
+Nem mesmo a cadeia de fallback quebra isso: o cliente escolhe *qual perfil* tentar,
+mas quem sabe traduzir "openrouter" em cliente HTTP continua sendo só este arquivo.
 A camada de domínio recebe um `LLMClient` já pronto e não sabe se por trás dele
 está OpenAI, Groq, OpenRouter, Gemini ou um Ollama local — que é a condição para
 a §35.2 valer (modelo aberto como caminho de primeira classe) e para a §28
@@ -13,9 +15,9 @@ para pagar isso quando o provedor configurado é outro.
 """
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
-from config import Settings, get_settings
+from config import ProviderProfile, Settings, get_settings
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -24,10 +26,21 @@ class LLMUnavailable(RuntimeError):
     """Provedor mal configurado ou inacessível (status LLM_UNAVAILABLE da §26)."""
 
 
-def build_chat_model(settings: Settings | None = None) -> Any:
-    """Instancia o modelo de chat do provedor configurado."""
+def build_chat_model(
+    settings: Settings | None = None, profile: Optional[ProviderProfile] = None
+) -> Any:
+    """
+    Instancia o modelo de chat de um perfil de provedor.
+
+    Sem `profile`, vale o primário de `settings` — que é o caso de sempre. A
+    cadeia de fallback (§35.3) passa o perfil do provedor alternativo, com o
+    modelo e a chave dele: os limites gerais (temperatura, teto de tokens)
+    continuam vindo de `settings`, porque são decisão do produto e não do
+    provedor.
+    """
     settings = settings or get_settings()
-    provider = settings.llm_provider
+    profile = profile or settings.llm_primary
+    provider = profile.provider
 
     common = {"temperature": settings.llm_temperature}
 
@@ -36,8 +49,8 @@ def build_chat_model(settings: Settings | None = None) -> Any:
             from langchain_groq import ChatGroq
 
             return ChatGroq(
-                groq_api_key=settings.llm_api_key,
-                model_name=settings.llm_model,
+                groq_api_key=profile.api_key,
+                model_name=profile.model,
                 max_tokens=settings.llm_max_tokens,
                 **common,
             )
@@ -47,9 +60,9 @@ def build_chat_model(settings: Settings | None = None) -> Any:
 
             # Endpoint compatível com a API da OpenAI — daí reusar ChatOpenAI.
             return ChatOpenAI(
-                openai_api_key=settings.llm_api_key,
+                openai_api_key=profile.api_key,
                 openai_api_base="https://openrouter.ai/api/v1",
-                model_name=settings.llm_model,
+                model_name=profile.model,
                 max_tokens=settings.llm_max_tokens,
                 **common,
             )
@@ -58,8 +71,8 @@ def build_chat_model(settings: Settings | None = None) -> Any:
             from langchain_google_genai import ChatGoogleGenerativeAI
 
             return ChatGoogleGenerativeAI(
-                google_api_key=settings.llm_api_key,
-                model=settings.llm_model,
+                google_api_key=profile.api_key,
+                model=profile.model,
                 max_output_tokens=settings.llm_max_tokens,
                 **common,
             )
@@ -71,15 +84,15 @@ def build_chat_model(settings: Settings | None = None) -> Any:
             # deixá-lo no default do servidor é o comportamento que já valia.
             return ChatOllama(
                 base_url=settings.ollama_base_url,
-                model=settings.llm_model,
+                model=profile.model,
                 **common,
             )
 
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
-            openai_api_key=settings.llm_api_key,
-            model_name=settings.llm_model,
+            openai_api_key=profile.api_key,
+            model_name=profile.model,
             max_tokens=settings.llm_max_tokens,
             **common,
         )

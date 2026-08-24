@@ -19,6 +19,19 @@ esperas configuradas (ou diante de uma espera maior que o teto) é que o status
 vira `LLM_UNAVAILABLE`. A espera não vale como tentativa da §25: o retry de lá é
 de *formato* — este é de *transporte*, e não consome a chance de correção.
 
+Quando há **cadeia de provedores** configurada (§35.2: `LLM_FALLBACK_PROVIDERS`,
+por padrão o OpenRouter atrás do Groq), o desenho muda de ênfase: com outro
+provedor ocioso, esperar 30 segundos pelo primário é trocar disponibilidade por
+nada. Então o primário não espera — passa a vez. Só o último elo da cadeia, que
+não tem para quem passar, usa o orçamento de esperas. O que motiva a troca é o
+provedor **não poder atender agora**: 429, saldo/cota esgotados, indisponibilidade
+ou má configuração. Chave recusada não entra nessa lista: é erro de instalação e
+precisa aparecer, não ser contornado em silêncio.
+
+A troca fica registrada. `LLMRunRecord.provider`/`model` dizem quem de fato
+respondeu, e `fallback_from` diz de quem a vez era — sem isso o relatório
+afirmaria que uma evidência veio de um modelo que nunca a viu.
+
 Sobre a extração do JSON: a §25 proíbe "regex improvisado para *salvar* conteúdo
 inválido e transformá-lo em nota". O que é feito aqui é diferente e anterior a
 isso — remover cerca de markdown e recortar o objeto JSON quando o modelo o
@@ -40,7 +53,7 @@ from typing import Any, Dict, Optional, Protocol, Tuple, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from config import Settings, get_settings
+from config import ProviderProfile, Settings, get_settings
 from llm.prompts import RenderedPrompt
 from llm.providers import LLMUnavailable, build_chat_model
 
@@ -112,6 +125,59 @@ def _suggested_wait(exc: Exception) -> Optional[float]:
     return None
 
 
+def _sem_saldo(exc: Exception) -> bool:
+    """Saldo, cota ou faturamento — o provedor está de pé, mas não vai atender."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 402:
+        return True
+    texto = str(exc).lower()
+    return any(
+        marca in texto
+        for marca in (
+            "insufficient_quota",
+            "insufficient quota",
+            "insufficient credit",
+            "insufficient_credit",
+            "exceeded your current quota",
+            "quota exceeded",
+            "payment required",
+            "billing",
+            "add credits",
+            "no credit",
+        )
+    )
+
+
+def _indisponivel(exc: Exception) -> bool:
+    """Provedor fora do ar ou inalcançável: 5xx, timeout, conexão recusada."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and 500 <= status < 600:
+        return True
+    if isinstance(exc, (asyncio.TimeoutError, ConnectionError, OSError)):
+        return True
+    texto = str(exc).lower()
+    return any(
+        marca in texto
+        for marca in ("connection error", "connection refused", "timed out", "service unavailable")
+    )
+
+
+def _pode_trocar(exc: Exception) -> bool:
+    """
+    Vale acionar o próximo provedor da cadeia?
+
+    Sim quando o provedor da vez não pode atender agora — teto de taxa, saldo ou
+    indisponibilidade. Não quando o erro é da instalação (chave recusada, modelo
+    inexistente, requisição malformada): trocar aí esconderia o defeito e faria
+    a avaliação inteira rodar num provedor que ninguém escolheu.
+    """
+    return _is_rate_limit(exc) or _sem_saldo(exc) or _indisponivel(exc)
+
+
 def _backoff_delay(exc: Exception, tentativa: int, teto: float) -> Optional[float]:
     """
     Quanto esperar antes de repetir — ou None quando não vale a pena esperar.
@@ -147,6 +213,10 @@ class LLMRunRecord:
     output_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     error: Optional[str] = None
+    # Provedor de quem era a vez, quando esta execução foi para um fallback.
+    # Nulo na esmagadora maioria dos casos — e é essa a informação: não houve
+    # troca. Preenchido, diz que o primário não pôde atender.
+    fallback_from: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -164,6 +234,7 @@ class LLMRunRecord:
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
             "error": self.error,
+            "fallback_from": self.fallback_from,
         }
 
 
@@ -280,12 +351,30 @@ class LLMClient(Protocol):
 
 
 class LangChainLLMClient:
-    """Implementação sobre os chat models do LangChain."""
+    """
+    Implementação sobre os chat models do LangChain, com cadeia de provedores.
 
-    def __init__(self, settings: Optional[Settings] = None, model: Any = None):
+    A cadeia é `settings.llm_chain`: o provedor configurado primeiro, os de
+    `LLM_FALLBACK_PROVIDERS` depois. A troca acontece só quando o provedor da vez
+    **não pode atender** — teto de taxa, saldo/cota, provedor fora do ar. Saída
+    que não valida no schema não troca de provedor: aquilo é veredito de conteúdo
+    da §25, e sair procurando um modelo que devolva JSON válido transformaria uma
+    rejeição registrada numa busca por resposta conveniente.
+    """
+
+    def __init__(
+        self,
+        settings: Optional[Settings] = None,
+        model: Any = None,
+        models: Optional[Dict[str, Any]] = None,
+    ):
         self._settings = settings or get_settings()
-        # `model` injetável para teste: a suíte não deve depender de rede.
-        self._model = model
+        # Modelos injetáveis para teste: a suíte não deve depender de rede.
+        # `model` preenche o primário; `models` (provedor → duplo) permite
+        # exercitar a cadeia inteira sem chave nenhuma.
+        self._models: Dict[str, Any] = dict(models or {})
+        if model is not None:
+            self._models.setdefault(self._settings.llm_provider, model)
 
     @property
     def provider(self) -> str:
@@ -295,27 +384,34 @@ class LangChainLLMClient:
     def model_name(self) -> str:
         return self._settings.llm_model
 
-    def _chat_model(self) -> Any:
-        if self._model is None:
-            self._model = build_chat_model(self._settings)
-        return self._model
+    def _chat_model(self, profile: ProviderProfile) -> Any:
+        modelo = self._models.get(profile.provider)
+        if modelo is None:
+            modelo = build_chat_model(self._settings, profile)
+            self._models[profile.provider] = modelo
+        return modelo
 
-    async def _invoke(self, chat_model: Any, messages: Any, prompt_id: str) -> Tuple[Any, int]:
+    async def _invoke(
+        self, chat_model: Any, messages: Any, prompt_id: str, max_waits: int
+    ) -> Tuple[Any, int]:
         """
         Chama o modelo, esperando e repetindo enquanto a recusa for 429.
 
         Devolve a mensagem e quantas esperas foram necessárias. Qualquer outro
         erro sobe intacto: só o limite de taxa é transitório por definição.
+
+        `max_waits` é zero quando ainda há provedor alternativo na cadeia —
+        segurar a chamada por 30 segundos enquanto outro provedor está ocioso
+        seria trocar disponibilidade por espera sem ganho nenhum.
         """
         teto = float(self._settings.llm_rate_limit_max_wait_s)
-        maximo = max(0, int(self._settings.llm_rate_limit_retries))
         esperas = 0
 
         while True:
             try:
                 return await chat_model.ainvoke(messages), esperas
             except Exception as exc:
-                if not _is_rate_limit(exc) or esperas >= maximo:
+                if not _is_rate_limit(exc) or esperas >= max_waits:
                     raise
                 atraso = _backoff_delay(exc, esperas, teto)
                 if atraso is None:
@@ -326,17 +422,63 @@ class LangChainLLMClient:
                     prompt_id,
                     atraso,
                     esperas,
-                    maximo,
+                    max_waits,
                 )
                 await asyncio.sleep(atraso)
 
     async def structured_generate(
         self, prompt: RenderedPrompt, schema: Type[T], max_attempts: int = 2
     ) -> StructuredResult:
+        cadeia = self._settings.llm_chain
+        detalhe: list = []
+        resultado: Optional[StructuredResult] = None
+
+        for indice, profile in enumerate(cadeia):
+            tem_alternativa = indice + 1 < len(cadeia)
+            resultado, trocar = await self._generate_with(
+                profile,
+                prompt,
+                schema,
+                max_attempts,
+                detalhe,
+                tem_alternativa=tem_alternativa,
+                fallback_from=cadeia[0].provider if indice else None,
+            )
+            if not trocar:
+                return resultado
+            logger.warning(
+                "Provedor %s não pôde atender %s (%s); passando para %s.",
+                profile.provider,
+                prompt.prompt_id,
+                resultado.run.error or "sem detalhe",
+                cadeia[indice + 1].provider,
+            )
+
+        # Cadeia inteira esgotada. `resultado` carrega a falha do último elo, que
+        # é a que o operador precisa ver. Não pode ser None: `llm_chain` sempre
+        # tem ao menos o provedor primário, então o laço rodou pelo menos uma vez.
+        if resultado is None:  # pragma: no cover — invariante da cadeia
+            raise RuntimeError("cadeia de provedores vazia")
+        return resultado
+
+    async def _generate_with(
+        self,
+        profile: ProviderProfile,
+        prompt: RenderedPrompt,
+        schema: Type[T],
+        max_attempts: int,
+        attempts_detail: list,
+        tem_alternativa: bool,
+        fallback_from: Optional[str],
+    ) -> Tuple[StructuredResult, bool]:
+        """
+        Uma passada completa (§25) num único provedor.
+
+        Devolve o resultado e se vale tentar o próximo elo da cadeia.
+        """
         input_hash = _sha256(f"{prompt.system}\n\n{prompt.user}")
         started = time.perf_counter()
         messages = list(prompt.as_messages())
-        attempts_detail = []
         raw_text = ""
         usage: Dict[str, Optional[int]] = {
             "input_tokens": None,
@@ -349,34 +491,58 @@ class LangChainLLMClient:
                 run_id=uuid.uuid4().hex,
                 prompt_id=prompt.prompt_id,
                 prompt_version=prompt.prompt_version,
-                provider=self.provider,
-                model=self.model_name,
+                provider=profile.provider,
+                model=profile.model,
                 status=status,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 attempts=attempts,
                 input_hash=input_hash,
                 output_hash=_sha256(raw_text) if raw_text else None,
                 error=error,
+                fallback_from=fallback_from,
                 **usage,
             )
 
+        def falhou(status: str, attempts: int, error: str, trocar: bool):
+            attempts_detail.append(
+                {"attempt": attempts, "provider": profile.provider, "error": error}
+            )
+            return (
+                StructuredResult(
+                    run=record(status, attempts, error),
+                    raw_text=raw_text,
+                    attempts_detail=tuple(attempts_detail),
+                ),
+                trocar,
+            )
+
         try:
-            chat_model = self._chat_model()
+            chat_model = self._chat_model(profile)
         except LLMUnavailable as exc:
-            logger.warning("LLM indisponível para %s: %s", prompt.prompt_id, exc)
-            return StructuredResult(run=record(STATUS_UNAVAILABLE, 0, str(exc)))
+            # Provedor mal configurado é motivo para tentar o próximo: manter a
+            # cadeia parada num elo quebrado não ajuda ninguém.
+            logger.warning("LLM indisponível em %s: %s", profile.provider, exc)
+            return falhou(STATUS_UNAVAILABLE, 0, str(exc), tem_alternativa)
+
+        # Com alternativa na cadeia, não se espera: passa a vez. Sem alternativa,
+        # vale o orçamento configurado — é a única chance que resta.
+        max_waits = 0 if tem_alternativa else max(0, self._settings.llm_rate_limit_retries)
 
         last_error = "resposta não validada"
         for attempt in range(1, max(1, max_attempts) + 1):
             try:
-                message, esperas = await self._invoke(chat_model, messages, prompt.prompt_id)
+                message, esperas = await self._invoke(
+                    chat_model, messages, prompt.prompt_id, max_waits
+                )
             except Exception as exc:
-                logger.warning("Falha na chamada à LLM (%s): %s", prompt.prompt_id, exc)
-                attempts_detail.append({"attempt": attempt, "error": str(exc)})
-                return StructuredResult(
-                    run=record(STATUS_UNAVAILABLE, attempt, str(exc)),
-                    raw_text=raw_text,
-                    attempts_detail=tuple(attempts_detail),
+                logger.warning(
+                    "Falha na chamada à LLM (%s em %s): %s",
+                    prompt.prompt_id,
+                    profile.provider,
+                    exc,
+                )
+                return falhou(
+                    STATUS_UNAVAILABLE, attempt, str(exc), tem_alternativa and _pode_trocar(exc)
                 )
 
             raw_text = _message_text(message)
@@ -392,16 +558,26 @@ class LangChainLLMClient:
                     last_error = exc.errors(include_url=False).__str__()
                 else:
                     attempts_detail.append(
-                        {"attempt": attempt, "error": None, "rate_limit_waits": esperas}
+                        {
+                            "attempt": attempt,
+                            "provider": profile.provider,
+                            "error": None,
+                            "rate_limit_waits": esperas,
+                        }
                     )
-                    return StructuredResult(
-                        run=record(STATUS_OK, attempt, None),
-                        data=data,
-                        raw_text=raw_text,
-                        attempts_detail=tuple(attempts_detail),
+                    return (
+                        StructuredResult(
+                            run=record(STATUS_OK, attempt, None),
+                            data=data,
+                            raw_text=raw_text,
+                            attempts_detail=tuple(attempts_detail),
+                        ),
+                        False,
                     )
 
-            attempts_detail.append({"attempt": attempt, "error": last_error})
+            attempts_detail.append(
+                {"attempt": attempt, "provider": profile.provider, "error": last_error}
+            )
 
             # Retry controlado: reapresenta o schema e pede só o formato de volta.
             if attempt < max_attempts:
@@ -417,15 +593,20 @@ class LangChainLLMClient:
                 ]
 
         logger.warning(
-            "Saída da LLM inválida após %d tentativa(s) em %s: %s",
+            "Saída da LLM inválida após %d tentativa(s) em %s (%s): %s",
             max_attempts,
             prompt.prompt_id,
+            profile.provider,
             last_error,
         )
-        return StructuredResult(
-            run=record(STATUS_OUTPUT_INVALID, max_attempts, last_error),
-            raw_text=raw_text,
-            attempts_detail=tuple(attempts_detail),
+        # Sem troca de provedor: ver a docstring da classe.
+        return (
+            StructuredResult(
+                run=record(STATUS_OUTPUT_INVALID, max_attempts, last_error),
+                raw_text=raw_text,
+                attempts_detail=tuple(attempts_detail),
+            ),
+            False,
         )
 
 
