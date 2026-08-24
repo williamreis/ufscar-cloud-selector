@@ -206,8 +206,23 @@ async def recommend(q: QuestionnaireResponse):
     llm_runs.append(llm_run.as_dict())
 
     # 5) Só entram no ranking os provedores com base documental indexada.
-    #    Sem documentos não há como sustentar a avaliação com evidência, então o
-    #    provedor é excluído do relatório em vez de aparecer com nota sem lastro.
+    #
+    #    DESVIO ASSUMIDO em relação à §4.4.1.3. A diretriz trata sempre do
+    #    indicador — "esse indicador é considerado não avaliável naquela
+    #    execução" — e em nenhum ponto prevê retirar uma alternativa da
+    #    comparação. Ela também não define como o conjunto de alternativas é
+    #    formado, de modo que este filtro preenche um silêncio em vez de
+    #    contradizer o texto.
+    #
+    #    A alternativa literal foi avaliada e descartada pelo autor: manter o
+    #    provedor sem documentos deixaria todos os seus indicadores em ausência
+    #    de evidência, o que os retiraria da comparação para TODAS as
+    #    alternativas (§11.1) e colapsaria o ranking em zeros sempre que um dos
+    #    provedores não tivesse base indexada.
+    #
+    #    A exclusão não é silenciosa: os provedores fora aparecem em
+    #    `coverage.excluded_no_documents` e a avaliação recebe uma limitação
+    #    declarada.
     chunk_counts = await run_in_threadpool(rag.count_chunks_by_provider)
     evaluated = [p for p in PROVIDERS if chunk_counts.get(p["id"], 0) > 0]
     excluded = [
