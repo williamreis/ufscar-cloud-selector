@@ -7,17 +7,30 @@ const STAGES = [
   { icon: "📊", label: "Montando o relatório" },
 ];
 
+// A partir daqui a demora deixa de ser normal e vira informação útil: quase
+// sempre é o provedor de LLM segurando as chamadas por limite de taxa. O valor
+// tem folga sobre os ~80s medidos numa avaliação completa — avisar cedo demais
+// treinaria o gestor a ignorar o aviso.
+const DEMORA_ATIPICA_S = 150;
+
 /**
  * Overlay de progresso do /api/recommend. As etapas avançam por tempo estimado —
  * o backend responde só no fim, então isto comunica o que está acontecendo, não
  * um progresso real medido.
+ *
+ * O cronômetro não é enfeite. A extração faz uma chamada à LLM por (provedor ×
+ * dimensão) e, em camada gratuita, cada uma pode levar dezenas de segundos: sem
+ * o decorrido na tela, uma espera legítima de dois minutos é indistinguível de
+ * uma tela travada — que foi exatamente como ela apareceu.
  */
 export default function LoadingOverlay({ open }: { open: boolean }) {
   const [stage, setStage] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
     if (!open) {
       setStage(0);
+      setElapsed(0);
       return;
     }
     const timers = [
@@ -25,10 +38,16 @@ export default function LoadingOverlay({ open }: { open: boolean }) {
       setTimeout(() => setStage(2), 6000),
       setTimeout(() => setStage(3), 11000),
     ];
-    return () => timers.forEach(clearTimeout);
+    const tick = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => {
+      timers.forEach(clearTimeout);
+      clearInterval(tick);
+    };
   }, [open]);
 
   if (!open) return null;
+
+  const demorado = elapsed >= DEMORA_ATIPICA_S;
 
   return (
     <div
@@ -47,8 +66,11 @@ export default function LoadingOverlay({ open }: { open: boolean }) {
         <h2 className="text-center text-base font-bold text-slate-900 mb-1">
           Gerando sua recomendação
         </h2>
-        <p className="text-center text-xs text-slate-500 mb-6">
-          Isso costuma levar de 5 a 20 segundos.
+        <p className="text-center text-xs text-slate-500 mb-1">
+          Costuma levar de 1 a 2 minutos — uma consulta à LLM por provedor e dimensão.
+        </p>
+        <p className="text-center text-xs font-medium tabular-nums text-slate-400 mb-6">
+          {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")} decorrido
         </p>
 
         <ul className="space-y-2.5">
@@ -82,6 +104,14 @@ export default function LoadingOverlay({ open }: { open: boolean }) {
             );
           })}
         </ul>
+
+        {demorado && (
+          <p className="mt-5 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
+            Está acima do normal. O provedor de LLM costuma estar limitando as
+            chamadas por cota; a avaliação segue e é interrompida em 10 minutos
+            se não concluir.
+          </p>
+        )}
       </div>
     </div>
   );

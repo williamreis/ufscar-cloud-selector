@@ -186,6 +186,14 @@ de domínio recebe um `LLMClient` pronto — condição para que trocar de model
 altere regra nenhuma (§28) e para que o Ollama local seja caminho de primeira
 classe (§35.2).
 
+**O SDK não decide por nós.** Todos os chat models são construídos com
+`max_retries=0` e `request_timeout` (`LLM_TIMEOUT_S`). Os SDKs da Groq e da OpenAI,
+por padrão, repetem o 429 sozinhos e **dormem dentro da chamada** o tempo que o
+provedor pedir: a camada de cima nunca via o limite de taxa, não passava a vez
+para o fallback, e uma chamada de 3s virava uma de 80s. Nove dessas numa avaliação
+davam onze minutos de requisição — além do `proxy_read_timeout` do nginx e de
+qualquer paciência. Quem decide esperar ou trocar é o `LLMClient`.
+
 **Cadeia de provedores.** O padrão é Groq com OpenRouter atrás
 (`LLM_FALLBACK_PROVIDERS`). O primário só perde a vez quando **não pode atender
 agora** — 429, saldo/cota, indisponibilidade, má configuração do próprio elo. Duas
@@ -195,6 +203,62 @@ outro modelo até um deles devolver JSON válido trocaria rejeição registrada 
 resposta conveniente. Havendo alternativa, o provedor da vez não espera o limite
 passar: passa a vez. Só o último elo usa o orçamento de esperas. Quem respondeu
 vai em `llm_runs.provider`; de quem era a vez, em `llm_runs.fallback_from`.
+
+Duas armadilhas conhecidas, ambas já cobradas em teste:
+
+- **Teto de tokens.** `LLM_MAX_TOKENS` cobre a resposta inteira, e nos modelos de
+  raciocínio o "pensamento" gasta parte dela antes do JSON começar. Com 1500 a
+  extração truncava e *toda* dimensão se perdia — com a mensagem enganosa de
+  "resposta não contém JSON válido". O default é 4000, e o cliente distingue
+  truncamento de resposta malformada porque a ação do operador é diferente.
+- **Modelo `:free` do OpenRouter some sem aviso.** O
+  `meta-llama/llama-4-maverick:free` passou a responder 404 pedindo a versão paga.
+  Um 404 não aciona fallback (é erro de instalação), então o fallback ficava morto.
+  Ao trocar, confira <https://openrouter.ai/models?max_price=0>.
+- **O sufixo `:free` tem um teto por dia que o saldo não levanta.** Chamadas
+  `:free` não consomem crédito e por isso crédito não as libera: elas caem num
+  teto de requisições diárias da conta (50/dia sem compra registrada), que responde
+  429 com `limit_source: openrouter_free_tier_daily`. Com o Groq no primeiro elo,
+  os dois elos caem no mesmo dia e a avaliação sai inteira em `LLM_UNAVAILABLE`.
+  Quem tem saldo tira o `:free` de `OPENROUTER_MODEL`; o default do código o
+  mantém porque um valor que ninguém escolheu não pode começar a gastar.
+
+**A camada gratuita do Groq não sustenta a extração.** Uma chamada por (provedor ×
+dimensão) custa ~6.000 tokens de prompt, contra um teto de 8.000 por minuto: a
+partir da segunda chamada o 429 é certo. É por isso que o fallback existe, e não
+por precaução — na prática o Groq atende as primeiras e o OpenRouter atende o
+resto. Daí também as duas afinações que tiram o desperdício disso:
+
+- **A recusa por cota é lembrada.** O provedor que responde "tente em 11s" fica em
+  compasso de espera por esse prazo, e as chamadas seguintes pulam o elo em vez de
+  colher o mesmo não. A janela declarada vale por inteiro até `LLM_COOLDOWN_MAX_S`
+  — orçamento distinto de `LLM_RATE_LIMIT_MAX_WAIT_S`, porque pular não custa
+  espera; confundir os dois truncava a cota diária do Groq (21min) em 60s. O
+  último elo da cadeia nunca é pulado.
+- **A sondagem é uma só, desde a primeira leva.** Com `LLM_CONCURRENCY=3` as três
+  chamadas saem antes de qualquer recusa voltar, e antes cada uma colhia o mesmo
+  não — três 429 idênticos do Groq logo depois de "Application startup complete".
+  Agora, enquanto o provedor não tiver respondido neste processo, **uma** chamada
+  sonda e as outras aguardam o veredito dela. Aguardar, e não pular direto ao
+  fallback, é deliberado: com o provedor de pé todas seguem por ele e a avaliação
+  sai de um modelo só, que é o que a §27 precisa afirmar no relatório. Assim que
+  ele responde, a concorrência volta a correr solta.
+- **A espera de cota sobrevive ao reinício.** Ela é gravada em
+  `<dir do audit.db>/llm_cooldown.json`, em instante absoluto — o relógio
+  monotônico não atravessa reinício, e um prazo relativo viraria janela nova a
+  cada subida. Sem isso, todo restart gastava de novo as chamadas de descoberta
+  num provedor que já estava em cota diária. É cache: apagar o arquivo só faz a
+  próxima leva sondar outra vez, e erro de leitura ou escrita volta a ser memória.
+- **Cota diária não se resolve esperando.** Teto por minuto passa em segundos e o
+  último elo da cadeia espera por ele; teto por dia (`per day`, `TPD`,
+  `free-models-per-day`) só vira na virada, e nenhuma das esperas configuradas o
+  alcança — o cliente falha na hora em vez de somar ~17s de backoff por chamada.
+  A janela vem do que o provedor declara: a frase "try again in 21m20s" do Groq,
+  ou o `X-RateLimit-Reset` em epoch-ms que o OpenRouter aninha no corpo do 429.
+- **`LLM_CONCURRENCY=3`.** Serializar fazia sentido quando o teto de tokens do
+  Groq era o gargalo; com o OpenRouter atendendo, só somava latência.
+
+Medido de ponta a ponta numa avaliação completa: 209s antes das duas, 77s depois.
 
 ### Guardrails (multicamada, sem biblioteca externa)
 
