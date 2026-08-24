@@ -130,10 +130,14 @@ def client(tmp_path, monkeypatch):
             return FakeMessage(self._extracao(messages))
 
     fake_model = FakeModel()
-    monkeypatch.setattr(
-        "llm.client.build_chat_model", lambda settings=None: fake_model, raising=False
-    )
-    monkeypatch.setattr("llm.providers.build_chat_model", lambda settings=None: fake_model)
+    # O duplo aceita `profile` porque o cliente passa o elo da cadeia que está
+    # tentando (§35.2). Aqui todos os elos devolvem o mesmo duplo: o pipeline não
+    # é o lugar de testar a troca de provedor.
+    def _build(settings=None, profile=None):
+        return fake_model
+
+    monkeypatch.setattr("llm.client.build_chat_model", _build, raising=False)
+    monkeypatch.setattr("llm.providers.build_chat_model", _build)
 
     with TestClient(main.app) as test_client:
         test_client.fake_model = fake_model

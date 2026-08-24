@@ -276,6 +276,10 @@ class LLMRun(Base):
     input_hash: Mapped[Optional[str]] = mapped_column(String(64))
     output_hash: Mapped[Optional[str]] = mapped_column(String(64))
     error: Mapped[Optional[str]] = mapped_column(Text)
+    # Provedor de quem era a vez quando esta execução caiu para um fallback.
+    # `provider` acima diz quem respondeu; esta coluna diz quem deveria ter
+    # respondido — sem as duas, a auditoria não consegue explicar a troca.
+    fallback_from: Mapped[Optional[str]] = mapped_column(String(40))
 
     submission: Mapped[Optional[Submission]] = relationship(back_populates="llm_runs")
 
@@ -437,6 +441,9 @@ _ADDITIVE_COLUMNS: Dict[str, Dict[str, str]] = {
     "rag_queries": {
         "refined_terms": "TEXT",
     },
+    "llm_runs": {
+        "fallback_from": "VARCHAR(40)",
+    },
 }
 
 
@@ -554,6 +561,7 @@ def save_submission(
                 input_hash=run.get("input_hash"),
                 output_hash=run.get("output_hash"),
                 error=run.get("error"),
+                fallback_from=run.get("fallback_from"),
             )
         )
 
@@ -837,6 +845,7 @@ def get_submission(submission_id: str) -> Optional[Dict[str, Any]]:
                     "input_hash": r.input_hash,
                     "output_hash": r.output_hash,
                     "error": r.error,
+                    "fallback_from": r.fallback_from,
                     "created_at": _iso(r.created_at),
                 }
                 for r in s.llm_runs
