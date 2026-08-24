@@ -108,6 +108,7 @@ def runtime_versions(prompt_versions: Optional[Dict[str, str]] = None) -> Dict[s
         "algorithm_version": settings.scoring_algorithm_version,
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
+        "llm_fallback_providers": [p.provider for p in settings.llm_fallbacks],
         "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
     }
