@@ -365,20 +365,51 @@ escolha do provedor.
 O documento pode ser incorporado na seção destinada à descrição do sistema, do
 seu funcionamento e da *stack* tecnológica do produto.
 
-### Divergências conhecidas em relação ao texto atual da dissertação
+### Divergências conhecidas em relação à diretriz
 
-Registradas aqui para conferência, não como correções aplicadas ao texto:
+A dissertação é a especificação do produto e não é alterada por este documento.
+As diferenças abaixo são **desvios assumidos**: foram identificados, apresentados
+e mantidos por decisão do autor. Ficam registrados aqui para que quem lê o
+produto ao lado do texto saiba onde os dois não coincidem, e por quê.
+
+**Desvios decididos**
 
 - A **Seção 5.3** cita "NumPy e Pandas" nos procedimentos quantitativos. O Pandas
-  foi removido quando a agregação passou a ser a soma ponderada da Equação 5; a
-  aritmética hoje é só de vetores NumPy.
-- Os **Quadros 22 e 24** não descrevem o conjunto de indicadores efetivamente
-  avaliado. A relação entre os quadros e os treze indicadores operacionais, com o
-  motivo de cada exclusão, é gerada por `scripts/generate_quadros.py`.
-- A **Seção 4.2.3** descreve o bloqueio por inconsistência do AHP; o produto o
-  implementa, e acrescenta a indicação do par de comparações que mais destoa —
-  recurso não previsto no texto.
+  deixou de ser usado quando a agregação passou a ser a soma ponderada da
+  Equação 5, que é aritmética de vetores. Decisão: manter o código sem ele —
+  declarar uma dependência que ninguém importa seria pior que a diferença de
+  redação, e nenhum procedimento quantitativo deixa de ser executado.
+- A **Seção 4.4.1.3** prevê a exclusão de *indicadores* sem evidência comparável,
+  e não trata de alternativas. O produto retira do conjunto avaliado o provedor
+  sem documentos indexados. A diretriz não define como o conjunto de alternativas
+  é formado; manter o provedor deixaria todos os seus indicadores em ausência de
+  evidência, o que os retiraria da comparação para todas as alternativas e
+  colapsaria o ranking. A exclusão é declarada em cada avaliação.
+- Os **Quadros 22 e 24** listam mais indicadores do que o produto avalia, e o
+  **Quadro 25** traz treze perguntas fechadas. Como a Seção 4.4.1.4 faz o peso
+  local depender dessas respostas, um indicador sem pergunta não recebe peso e
+  não entra na Equação 5 — não há implementação que satisfaça os dois conjuntos.
+  Decisão: prevalece o Quadro 25. A relação entre os quadros e os treze
+  indicadores, com o motivo de cada exclusão, é gerada por
+  `scripts/generate_quadros.py`.
+
+**Comportamentos além da diretriz**
+
+Nenhum contradiz o texto; todos ampliam o que ele descreve.
+
+- A **Seção 4.2.3** determina que o sistema informe a inconsistência do AHP e
+  solicite a revisão. O produto faz isso e acrescenta a indicação do par de
+  comparações cujo julgamento mais destoa dos demais.
 - A **Seção 4.4.1** prevê três situações para a evidência (quantitativa,
   qualitativa e ausente). O produto trabalha com quatro estados, acrescentando
-  `PARTIAL` para o trecho que trata do tema sem sustentar o valor pedido; por
-  decisão de configuração, ele fica fora do conjunto comparável.
+  `PARTIAL` — trecho que trata do tema sem sustentar o valor pedido — e
+  `INVALID`, para saída do modelo fora das regras. Nenhum dos dois pontua.
+- A **Seção 4.4.1.1** exige valores comparáveis sem dizer o que fazer quando dois
+  provedores publicam o mesmo indicador em unidades diferentes. O produto retira
+  o indicador da comparação. **É o único desvio que pode alterar um ranking.**
+- A **Seção 4.5.1** determina que o Bloco E refine as consultas sem alterar pesos.
+  O produto cumpre as duas coisas e impõe limites que o texto não fixa: no máximo
+  quatro termos por indicador, sessenta caracteres cada, sempre depois dos termos
+  da pesquisa.
+- A **Seção 4.2.3** descreve um procedimento de ponderação. O produto o usa como
+  padrão e mantém o método do autovetor disponível por configuração.

@@ -454,6 +454,7 @@
   ],
   "not_operationalized": {
     "_leia_me": [
+      "DECISÃO REGISTRADA em `_decisao`: o conjunto operacional segue o Quadro 25.",
       "Linhas dos Quadros 22 e 24 que não se tornaram indicadores da plataforma.",
       "",
       "A §4.4 registra a redução e dá os critérios: 'a disponibilidade das",
@@ -531,6 +532,7 @@
         "reason": "sem_pergunta_no_questionario",
         "_nota": "O Quadro 24 traz a linha, mas o Bloco C do Quadro 25 tem quatro perguntas e nenhuma sobre monitoramento — sem pergunta não há coeficiente de relevância, logo não há peso local."
       }
-    ]
+    ],
+    "_decisao": "CONFLITO NA DIRETRIZ, RESOLVIDO PELO AUTOR: prevalece o Quadro 25. O Quadro 22 lista 22 indicadores e o Quadro 25 traz 13 perguntas fechadas; a §4.4.1.4 faz o peso local depender dessas respostas, de modo que um indicador sem pergunta não tem peso local, não tem peso global e não entra na Equação 5. Não existe implementação que satisfaça os dois quadros ao mesmo tempo. A decisão foi manter o conjunto operacional em correspondência 1:1 com o Quadro 25, e as linhas abaixo registram o que isso deixa de fora."
   }
 }
