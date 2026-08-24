@@ -565,6 +565,25 @@ saíram do `main.py` para `backend/app/documents.py` — `main` importa o router
 as mesmas rotas do painel; `POST /api/documents/ingest-global` continua existindo
 e continua síncrono, para uso por linha de comando, onde esperar não é problema.
 
+## Desvios assumidos em relação à diretriz
+
+A dissertação é a especificação e não se altera. Onde o código se afasta dela, o
+afastamento é decisão registrada do autor — não descuido. Os três abaixo foram
+apresentados e mantidos; cada um está anotado também no arquivo onde vive.
+
+| Diretriz | O que o código faz | Onde está registrado |
+| --- | --- | --- |
+| §5.3 cita "NumPy e Pandas" | Só NumPy. O Pandas saiu com a síntese distributiva; a Equação 5 é aritmética de vetores | `requirements.txt` |
+| §4.4.1.3 só prevê excluir **indicadores** | Provedor sem documentos indexados fica fora do conjunto avaliado. A diretriz não define como o conjunto de alternativas é formado; a alternativa literal colapsaria o ranking em zeros | `main.py`, passo 5 |
+| Quadro 22 lista 22 indicadores; Quadro 25 traz 13 perguntas | Prevalece o Quadro 25 — correspondência 1:1 com as perguntas fechadas. A §4.4.1.4 faz o peso local depender delas, então indicador sem pergunta não entra na Equação 5 | `indicators.json`, bloco `not_operationalized` |
+
+Além destes, o código faz cinco coisas que a diretriz não descreve nem proíbe: o
+diagnóstico do par mais inconsistente (§4.2.3), a regra de unidade divergente
+(§4.4.1.1), os estados `PARTIAL` e `INVALID` (§4.4.1), os limites do refinamento
+pelo Bloco E (§4.5.1) e o método de ponderação alternativo (§4.2.3). Só o segundo
+pode alterar um ranking — ele retira da comparação um indicador que a diretriz
+incluiria.
+
 ## Documentos do repositório
 
 `RESUMO.md` descreve o produto para incorporação na dissertação. Ele é **coberto
