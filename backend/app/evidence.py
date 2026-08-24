@@ -40,6 +40,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from starlette.concurrency import run_in_threadpool
 
 import rag
+from config import get_settings
 from domain.methodology import IndicatorConfig, Methodology
 from domain.normalization import (
     STATUS_FOUND,
@@ -70,7 +71,10 @@ MAX_CHUNKS_PER_CALL = 14
 
 # Chamadas simultâneas à LLM. O produto faz (provedores × dimensões) chamadas —
 # com 3 provedores são 9 —, e dispará-las todas de uma vez bate no rate limit da
-# maioria dos provedores comerciais.
+# maioria dos provedores comerciais. Em camada gratuita com teto de tokens por
+# minuto (o Groq grátis dá 8 mil TPM, e uma chamada destas pede ~4,5 mil), mesmo
+# duas em paralelo já estouram: daí `LLM_CONCURRENCY=1` no .env. O valor sai de
+# configuração; a constante permanece como default de quem chama sem settings.
 DEFAULT_CONCURRENCY = 3
 
 
@@ -617,7 +621,7 @@ async def extract_performances(
     methodology: Methodology,
     session_id: Optional[str] = None,
     guardrail_log: Optional[GuardrailLog] = None,
-    concurrency: int = DEFAULT_CONCURRENCY,
+    concurrency: Optional[int] = None,
     query_hints: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> ExtractionResult:
     """
@@ -630,6 +634,9 @@ async def extract_performances(
     `query_hints` são os termos que o Bloco E acrescentou a cada consulta
     (§4.5.1). Entram no fim da consulta, depois dos termos da pesquisa, e não
     tocam em mais nada do pipeline.
+
+    `concurrency` sem valor segue `LLM_CONCURRENCY` da configuração: quem paga
+    por token tolera paralelismo, quem está na camada gratuita precisa de 1.
     """
     log = guardrail_log if guardrail_log is not None else GuardrailLog()
     resultado = ExtractionResult()
@@ -666,7 +673,9 @@ async def extract_performances(
             )
 
     # -- 2. Interpretação, uma chamada por (provedor × dimensão) --------------
-    semaphore = asyncio.Semaphore(max(1, concurrency))
+    if concurrency is None:
+        concurrency = get_settings().llm_concurrency
+    semaphore = asyncio.Semaphore(max(1, int(concurrency)))
     tarefas = []
     for provider in providers:
         for dimension, do_grupo in por_dimensao.items():

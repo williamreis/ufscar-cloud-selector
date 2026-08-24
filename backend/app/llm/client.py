@@ -10,6 +10,15 @@ A diretriz pede três coisas que aqui andam juntas:
   - **§27** — cada chamada devolve provider, model, prompt_version, latência,
     tokens quando disponíveis, status e hash de entrada/saída.
 
+Um caso de erro é tratado à parte dos demais: o **429 (rate limit)**. As camadas
+gratuitas impõem teto de tokens por minuto e respondem "tente de novo em 31s" —
+isso é espera, não indisponibilidade, e transformá-lo direto em `LLM_UNAVAILABLE`
+perdia a extração inteira de uma dimensão por um limite que passa sozinho. Aqui a
+chamada aguarda o tempo que o provedor pede e repete; só depois de esgotar as
+esperas configuradas (ou diante de uma espera maior que o teto) é que o status
+vira `LLM_UNAVAILABLE`. A espera não vale como tentativa da §25: o retry de lá é
+de *formato* — este é de *transporte*, e não consome a chance de correção.
+
 Sobre a extração do JSON: a §25 proíbe "regex improvisado para *salvar* conteúdo
 inválido e transformá-lo em nota". O que é feito aqui é diferente e anterior a
 isso — remover cerca de markdown e recortar o objeto JSON quando o modelo o
@@ -18,13 +27,16 @@ embrulha em prosa. O conteúdo recortado ainda passa inteiro pelo Pydantic, e na
 malformada em valor aceito.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
+import random
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Protocol, Type, TypeVar
+from typing import Any, Dict, Optional, Protocol, Tuple, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -51,8 +63,70 @@ _CORRECTION_TEMPLATE = (
 )
 
 
+# Groq, OpenAI e OpenRouter dizem no corpo do erro quanto falta esperar
+# ("Please try again in 31.567499999s", "try again in 1m2.5s"). Ler esse número é
+# melhor que adivinhar: o backoff cego ou espera demais ou volta cedo e queima
+# outra requisição do minuto.
+_RETRY_AFTER_PATTERN = re.compile(
+    r"try again in\s+(?:(?P<min>[\d.]+)m)?(?P<sec>[\d.]+)s", re.IGNORECASE
+)
+
+
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    """Distingue 'espere' de 'não dá'. Só o primeiro merece nova tentativa."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if status == 429:
+        return True
+    # Sem status no objeto, sobra o texto. O casamento é por expressão inteira e
+    # não por "429" solto: a mensagem do Groq carrega contagens de token, e um
+    # "Used 4290" não pode ser lido como limite de taxa.
+    texto = str(exc).lower()
+    return any(
+        marca in texto
+        for marca in ("rate_limit", "rate limit", "too many requests", "code: 429", "status 429")
+    )
+
+
+def _suggested_wait(exc: Exception) -> Optional[float]:
+    """Tempo de espera que o provedor informou, em segundos, se informou."""
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    for chave in ("retry-after", "Retry-After", "x-ratelimit-reset-tokens"):
+        bruto = headers.get(chave) if hasattr(headers, "get") else None
+        if bruto:
+            try:
+                return float(str(bruto).rstrip("s"))
+            except ValueError:
+                pass
+
+    match = _RETRY_AFTER_PATTERN.search(str(exc))
+    if match:
+        minutos = float(match.group("min") or 0)
+        return minutos * 60 + float(match.group("sec"))
+    return None
+
+
+def _backoff_delay(exc: Exception, tentativa: int, teto: float) -> Optional[float]:
+    """
+    Quanto esperar antes de repetir — ou None quando não vale a pena esperar.
+
+    O jitter existe porque a extração dispara chamadas em paralelo: sem ele, as
+    que tomaram 429 juntas voltariam juntas e tomariam 429 de novo.
+    """
+    sugerido = _suggested_wait(exc)
+    if sugerido is None:
+        sugerido = min(2.0 ** tentativa, teto)
+    elif sugerido > teto:
+        # Janela maior que o teto configurado: segurar a requisição aqui só
+        # empurraria o timeout para o usuário. Falha declarada, e não presumida.
+        return None
+    return sugerido + random.uniform(0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -226,6 +300,36 @@ class LangChainLLMClient:
             self._model = build_chat_model(self._settings)
         return self._model
 
+    async def _invoke(self, chat_model: Any, messages: Any, prompt_id: str) -> Tuple[Any, int]:
+        """
+        Chama o modelo, esperando e repetindo enquanto a recusa for 429.
+
+        Devolve a mensagem e quantas esperas foram necessárias. Qualquer outro
+        erro sobe intacto: só o limite de taxa é transitório por definição.
+        """
+        teto = float(self._settings.llm_rate_limit_max_wait_s)
+        maximo = max(0, int(self._settings.llm_rate_limit_retries))
+        esperas = 0
+
+        while True:
+            try:
+                return await chat_model.ainvoke(messages), esperas
+            except Exception as exc:
+                if not _is_rate_limit(exc) or esperas >= maximo:
+                    raise
+                atraso = _backoff_delay(exc, esperas, teto)
+                if atraso is None:
+                    raise
+                esperas += 1
+                logger.info(
+                    "Limite de taxa em %s; aguardando %.1fs antes da tentativa %d/%d.",
+                    prompt_id,
+                    atraso,
+                    esperas,
+                    maximo,
+                )
+                await asyncio.sleep(atraso)
+
     async def structured_generate(
         self, prompt: RenderedPrompt, schema: Type[T], max_attempts: int = 2
     ) -> StructuredResult:
@@ -265,7 +369,7 @@ class LangChainLLMClient:
         last_error = "resposta não validada"
         for attempt in range(1, max(1, max_attempts) + 1):
             try:
-                message = await chat_model.ainvoke(messages)
+                message, esperas = await self._invoke(chat_model, messages, prompt.prompt_id)
             except Exception as exc:
                 logger.warning("Falha na chamada à LLM (%s): %s", prompt.prompt_id, exc)
                 attempts_detail.append({"attempt": attempt, "error": str(exc)})
@@ -287,7 +391,9 @@ class LangChainLLMClient:
                 except ValidationError as exc:
                     last_error = exc.errors(include_url=False).__str__()
                 else:
-                    attempts_detail.append({"attempt": attempt, "error": None})
+                    attempts_detail.append(
+                        {"attempt": attempt, "error": None, "rate_limit_waits": esperas}
+                    )
                     return StructuredResult(
                         run=record(STATUS_OK, attempt, None),
                         data=data,

@@ -89,6 +89,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _env_optional_int(name: str) -> Optional[int]:
     """Inteiro que aceita ausência como 'desligado' — não como zero."""
     raw = _env(name)
@@ -126,6 +136,18 @@ class Settings:
     llm_temperature: float
     llm_max_tokens: int
     ollama_base_url: str
+
+    # -- Limite de taxa do provedor (§26) -----------------------------------
+    # As camadas gratuitas (Groq, OpenRouter, Gemini) impõem teto de tokens por
+    # minuto. Bater nesse teto é espera, não indisponibilidade: o cliente aguarda
+    # o tempo que o provedor pede e repete a chamada, e só desiste depois de
+    # `llm_rate_limit_retries` esperas ou quando a espera pedida passa do teto —
+    # aí sim vira LLM_UNAVAILABLE, sem virar pontuação presumida.
+    llm_rate_limit_retries: int
+    llm_rate_limit_max_wait_s: float
+    # Chamadas simultâneas à LLM na extração de evidências. Em camada gratuita
+    # com teto de tokens por minuto, 1 é o valor que não desperdiça espera.
+    llm_concurrency: int
 
     # -- Embeddings (§35) ---------------------------------------------------
     # Separados do LLM de propósito: rodar a inferência no Groq e os embeddings
@@ -247,6 +269,9 @@ def _build_settings() -> Settings:
         llm_temperature=float(_env("LLM_TEMPERATURE", "0.2")),
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", 1500),
         ollama_base_url=_env("OLLAMA_BASE_URL", "http://localhost:11434"),
+        llm_rate_limit_retries=_env_int("LLM_RATE_LIMIT_RETRIES", 4),
+        llm_rate_limit_max_wait_s=_env_float("LLM_RATE_LIMIT_MAX_WAIT_S", 60.0),
+        llm_concurrency=max(1, _env_int("LLM_CONCURRENCY", 3)),
         embedding_provider=embedding_provider,
         embedding_model=embedding_model,
         embedding_api_key=embedding_api_key,

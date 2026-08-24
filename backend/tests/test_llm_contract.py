@@ -10,10 +10,13 @@ rede nem de chave de API.
 """
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 from pydantic import BaseModel
 
+from config import get_settings
+from llm import client as llm_client
 from llm.client import (
     STATUS_OK,
     STATUS_OUTPUT_INVALID,
@@ -220,3 +223,121 @@ def test_entradas_iguais_produzem_o_mesmo_hash():
 def test_schema_de_notas_nao_admite_numero_de_peso():
     """A saída do prompt de justificativa é texto — não há campo por onde entrar peso."""
     assert set(PreferenceNotes.model_fields) == {"notes"}
+
+
+# --- Limite de taxa do provedor (§26) --------------------------------------
+
+
+class RateLimitError(Exception):
+    """Imita o 429 do Groq: status no atributo e janela de espera na mensagem."""
+
+    def __init__(self, mensagem, status_code=429):
+        super().__init__(mensagem)
+        self.status_code = status_code
+
+
+def _sem_espera(monkeypatch):
+    """Substitui o sleep para que o teste meça a decisão, não o relógio."""
+    dormidas = []
+
+    async def falso_sleep(segundos):
+        dormidas.append(segundos)
+
+    monkeypatch.setattr(llm_client.asyncio, "sleep", falso_sleep)
+    return dormidas
+
+
+def _cliente(modelo, **overrides):
+    base = get_settings()
+    return LangChainLLMClient(settings=replace(base, **overrides), model=modelo)
+
+
+_MENSAGEM_429 = (
+    "Error code: 429 - {'error': {'message': 'Rate limit reached for model "
+    "`openai/gpt-oss-120b` ... on tokens per minute (TPM): Limit 8000, Used 7729, "
+    "Requested 4480. Please try again in 31.567499999s.', 'code': 'rate_limit_exceeded'}}"
+)
+
+
+@pytest.mark.parametrize(
+    "mensagem,esperado",
+    [
+        (_MENSAGEM_429, pytest.approx(31.5675)),
+        ("Rate limit reached. Please try again in 1m2.5s.", pytest.approx(62.5)),
+        ("Rate limit reached, sem janela informada", None),
+    ],
+)
+def test_janela_de_espera_sai_da_resposta_do_provedor(mensagem, esperado):
+    assert llm_client._suggested_wait(RateLimitError(mensagem)) == esperado
+
+
+def test_cabecalho_retry_after_tem_precedencia_sobre_a_mensagem():
+    class ComResposta(RateLimitError):
+        class response:  # noqa: N801 — imita o objeto do SDK
+            headers = {"retry-after": "12"}
+
+    assert llm_client._suggested_wait(ComResposta(_MENSAGEM_429)) == 12.0
+
+
+def test_rate_limit_e_espera_nao_indisponibilidade(monkeypatch):
+    """O 429 passa sozinho: esperar e repetir preserva a extração da dimensão."""
+    dormidas = _sem_espera(monkeypatch)
+    modelo = FakeModel(RateLimitError(_MENSAGEM_429), FakeMessage('{"notes":"depois da espera"}'))
+
+    result = _run(_cliente(modelo).structured_generate(_prompt(), Resposta))
+
+    assert result.ok and result.data.notes == "depois da espera"
+    # A espera é de transporte: não consome a tentativa de correção da §25.
+    assert result.run.attempts == 1
+    assert len(dormidas) == 1
+    assert 31.5 <= dormidas[0] <= 33.0  # janela pedida pelo provedor, mais jitter
+    assert result.attempts_detail[0]["rate_limit_waits"] == 1
+
+
+def test_rate_limit_insistente_termina_em_unavailable(monkeypatch):
+    """Esgotadas as esperas, é falha declarada — nunca pontuação presumida."""
+    dormidas = _sem_espera(monkeypatch)
+    modelo = FakeModel(*[RateLimitError(_MENSAGEM_429) for _ in range(4)])
+
+    result = _run(
+        _cliente(modelo, llm_rate_limit_retries=3).structured_generate(_prompt(), Resposta)
+    )
+
+    assert result.run.status == STATUS_UNAVAILABLE
+    assert result.data is None
+    assert len(dormidas) == 3
+
+
+def test_espera_maior_que_o_teto_falha_de_imediato(monkeypatch):
+    """Segurar a requisição além do teto só empurraria o timeout ao usuário."""
+    dormidas = _sem_espera(monkeypatch)
+    modelo = FakeModel(RateLimitError("Rate limit reached. Please try again in 600s."))
+
+    result = _run(
+        _cliente(modelo, llm_rate_limit_max_wait_s=60.0).structured_generate(_prompt(), Resposta)
+    )
+
+    assert result.run.status == STATUS_UNAVAILABLE
+    assert dormidas == []
+
+
+def test_erro_que_nao_e_rate_limit_nao_espera(monkeypatch):
+    """Chave inválida não melhora com o tempo: repetir seria só demora."""
+    dormidas = _sem_espera(monkeypatch)
+    modelo = FakeModel(RateLimitError("Error code: 401 - invalid_api_key", status_code=401))
+
+    result = _run(_cliente(modelo).structured_generate(_prompt(), Resposta))
+
+    assert result.run.status == STATUS_UNAVAILABLE
+    assert dormidas == []
+
+
+def test_contagem_de_token_na_mensagem_nao_e_confundida_com_429(monkeypatch):
+    """'Used 4290' não é limite de taxa: casar '429' solto faria esperar à toa."""
+    dormidas = _sem_espera(monkeypatch)
+    modelo = FakeModel(RuntimeError("Error code: 500 - internal error (Used 4290 tokens)"))
+
+    result = _run(_cliente(modelo).structured_generate(_prompt(), Resposta))
+
+    assert result.run.status == STATUS_UNAVAILABLE
+    assert dormidas == []
