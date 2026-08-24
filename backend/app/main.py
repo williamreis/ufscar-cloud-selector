@@ -68,13 +68,20 @@ async def lifespan(_app: FastAPI):
             fingerprint.get("unavailable_reason"),
         )
     logger.info(
-        "LLM=%s/%s · embeddings=%s/%s · algoritmo v%s",
+        "LLM=%s/%s%s · embeddings=%s/%s · algoritmo v%s",
         settings.llm_provider,
         settings.llm_model,
+        "".join(f" → {p.provider}/{p.model}" for p in settings.llm_fallbacks),
         settings.embedding_provider,
         settings.embedding_model,
         settings.scoring_algorithm_version,
     )
+    if not settings.llm_fallbacks:
+        logger.info(
+            "Sem provedor de fallback: no limite de taxa a extração espera, e no "
+            "fim da espera a dimensão fica sem evidência. Configure "
+            "LLM_FALLBACK_PROVIDERS e a chave correspondente para ter alternativa."
+        )
     yield
 
 

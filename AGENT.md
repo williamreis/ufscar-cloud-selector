@@ -186,6 +186,16 @@ de domínio recebe um `LLMClient` pronto — condição para que trocar de model
 altere regra nenhuma (§28) e para que o Ollama local seja caminho de primeira
 classe (§35.2).
 
+**Cadeia de provedores.** O padrão é Groq com OpenRouter atrás
+(`LLM_FALLBACK_PROVIDERS`). O primário só perde a vez quando **não pode atender
+agora** — 429, saldo/cota, indisponibilidade, má configuração do próprio elo. Duas
+coisas ficam de fora de propósito: chave recusada, que é erro de instalação e
+precisa aparecer; e saída reprovada no schema, que é veredito da §25 — procurar
+outro modelo até um deles devolver JSON válido trocaria rejeição registrada por
+resposta conveniente. Havendo alternativa, o provedor da vez não espera o limite
+passar: passa a vez. Só o último elo usa o orçamento de esperas. Quem respondeu
+vai em `llm_runs.provider`; de quem era a vez, em `llm_runs.fallback_from`.
+
 ### Guardrails (multicamada, sem biblioteca externa)
 
 A §22.1 é explícita: guardrail não é uma biblioteca, e a aplicação não deve
@@ -197,7 +207,7 @@ depender de uma para garantir as regras metodológicas centrais.
 | `guardrails/secrets.py` | credenciais em texto e documento; ação `MASK`/`REJECT`/`WARN` por `.env` |
 | `guardrails/injection.py` | heurísticas de prompt injection — registram, não bloqueiam |
 | `guardrails/text.py` | limite de tamanho e encapsulamento em `<USER_CONTEXT>` / `<DOCUMENT_CONTEXT>` |
-| `llm/client.py` | JSON → Pydantic → aceitar ou rejeitar, com um retry controlado |
+| `llm/client.py` | JSON → Pydantic → aceitar ou rejeitar, com um retry controlado; 429 é espera com backoff, não indisponibilidade; cadeia de fallback quando o provedor não pode atender |
 
 Duas decisões que explicam o desenho:
 
@@ -620,7 +630,7 @@ docker run --rm -v "$PWD/backend:/app" -w /app ufscar-cloud-selector-backend pyt
 | `test_ahp_matrix.py` | reciprocidade e diagonal unitária, autovetor (A·w = λmax·w), RC dentro e fora do limite, determinismo, equivalência entre formato novo e antigo |
 | `test_guardrails_files.py` | extensão, executável renomeado, MIME divergente, tamanho, nome saneado, symlink para fora, quota |
 | `test_guardrails_text.py` | credenciais (detecção, mascaramento, modos), os 4 casos adversariais da §42.5, limite de texto, encapsulamento à prova de fechamento |
-| `test_llm_contract.py` | prompt versionado, recorte de JSON, retry único, `LLM_OUTPUT_INVALID`, provedor indisponível, registro de execução |
+| `test_llm_contract.py` | prompt versionado, recorte de JSON, retry único, `LLM_OUTPUT_INVALID`, provedor indisponível, registro de execução, espera e repetição no limite de taxa (429), cadeia Groq → OpenRouter e o que não a aciona |
 | `test_versioning.py` | hash canônico do questionário, insensível a formatação e sensível a conteúdo, ausência do arquivo |
 | `test_resumo.py` | RESUMO.md descreve o produto que existe: não cita tecnologia removida, as citadas estão declaradas, questionário/prompts/limiares conferem com a configuração |
 | `test_quadro_coverage.py` | toda linha dos Quadros 22 e 24 tem destino declarado, conjunto operacional = perguntas fechadas, exclusões com motivo do vocabulário, recusa de registro incoerente, `--check` do gerador |

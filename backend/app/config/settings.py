@@ -71,6 +71,27 @@ SUPPORTED_LLM_PROVIDERS: Tuple[str, ...] = tuple(_LEGACY_MODEL_VARS)
 SUPPORTED_EMBEDDING_PROVIDERS: Tuple[str, ...] = ("openai", "huggingface")
 
 
+@dataclass(frozen=True)
+class ProviderProfile:
+    """
+    O trio que identifica uma LLM utilizável: quem atende, qual modelo, qual chave.
+
+    Existe porque a cadeia de fallback precisa carregar provedores que **não** são
+    o configurado em `LLM_PROVIDER` — e cada um tem modelo e credencial próprios.
+    Reaproveitar `llm_model` no fallback mandaria o nome de um modelo do Groq para
+    o OpenRouter; reaproveitar `llm_api_key` mandaria a chave errada junto.
+    """
+
+    provider: str
+    model: str
+    api_key: Optional[str]
+
+    @property
+    def usable(self) -> bool:
+        """Ollama roda local e não usa chave; os demais sem chave não atendem."""
+        return self.provider == "ollama" or bool(self.api_key)
+
+
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.getenv(name)
     if value is None:
@@ -85,6 +106,16 @@ def _env_int(name: str, default: int) -> int:
         return default
     try:
         return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
     except ValueError:
         return default
 
@@ -126,6 +157,25 @@ class Settings:
     llm_temperature: float
     llm_max_tokens: int
     ollama_base_url: str
+
+    # -- Limite de taxa do provedor (§26) -----------------------------------
+    # As camadas gratuitas (Groq, OpenRouter, Gemini) impõem teto de tokens por
+    # minuto. Bater nesse teto é espera, não indisponibilidade: o cliente aguarda
+    # o tempo que o provedor pede e repete a chamada, e só desiste depois de
+    # `llm_rate_limit_retries` esperas ou quando a espera pedida passa do teto —
+    # aí sim vira LLM_UNAVAILABLE, sem virar pontuação presumida.
+    llm_rate_limit_retries: int
+    llm_rate_limit_max_wait_s: float
+    # Chamadas simultâneas à LLM na extração de evidências. Em camada gratuita
+    # com teto de tokens por minuto, 1 é o valor que não desperdiça espera.
+    llm_concurrency: int
+
+    # Provedores acionados, em ordem, quando o primário não pode atender — teto
+    # de taxa estourado, saldo/cota esgotados ou provedor fora do ar. Não é
+    # balanceamento: o primário é sempre tentado primeiro, e a troca fica
+    # registrada em cada execução (§27) para que o relatório mostre qual modelo
+    # produziu qual evidência.
+    llm_fallbacks: Tuple[ProviderProfile, ...]
 
     # -- Embeddings (§35) ---------------------------------------------------
     # Separados do LLM de propósito: rodar a inferência no Groq e os embeddings
@@ -174,12 +224,23 @@ class Settings:
     sensitivity_deltas: Tuple[float, ...] = field(default=(-0.10, -0.05, 0.05, 0.10))
 
     @property
+    def llm_primary(self) -> ProviderProfile:
+        return ProviderProfile(self.llm_provider, self.llm_model, self.llm_api_key)
+
+    @property
+    def llm_chain(self) -> Tuple[ProviderProfile, ...]:
+        """Primário seguido dos fallbacks — a ordem em que serão tentados."""
+        return (self.llm_primary, *self.llm_fallbacks)
+
+    @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
 
 
 def _build_settings() -> Settings:
-    llm_provider = (_env("LLM_PROVIDER", "openai") or "openai").lower()
+    # Groq é o padrão por ser a camada gratuita mais rápida entre as suportadas.
+    # Um `.env` que já define LLM_PROVIDER continua mandando.
+    llm_provider = (_env("LLM_PROVIDER", "groq") or "groq").lower()
     if llm_provider not in SUPPORTED_LLM_PROVIDERS:
         raise ValueError(
             f"LLM_PROVIDER inválido: {llm_provider!r}. "
@@ -191,6 +252,26 @@ def _build_settings() -> Settings:
 
     key_var = _API_KEY_VARS[llm_provider]
     llm_api_key = _env(key_var) if key_var else None
+
+    # Cadeia de fallback. `LLM_MODEL` de propósito **não** entra aqui: aquele
+    # override diz qual modelo usar no provedor primário, e aplicá-lo ao fallback
+    # pediria ao OpenRouter um nome de modelo que só existe no Groq.
+    fallbacks: List[ProviderProfile] = []
+    for nome in _env_list("LLM_FALLBACK_PROVIDERS", "openrouter"):
+        nome = nome.lower()
+        if nome == llm_provider or nome not in SUPPORTED_LLM_PROVIDERS:
+            continue
+        var, padrao = _LEGACY_MODEL_VARS[nome]
+        chave_var = _API_KEY_VARS[nome]
+        perfil = ProviderProfile(
+            provider=nome,
+            model=_env(var, padrao),
+            api_key=_env(chave_var) if chave_var else None,
+        )
+        # Fallback sem credencial não é fallback: manter na cadeia só trocaria um
+        # erro de cota por um erro de configuração, mais tarde e menos claro.
+        if perfil.usable and perfil not in fallbacks:
+            fallbacks.append(perfil)
 
     # Sem EMBEDDING_PROVIDER explícito, reproduz a regra anterior: OpenAI usava
     # OpenAIEmbeddings, qualquer outro provedor caía no sentence-transformers
@@ -247,6 +328,10 @@ def _build_settings() -> Settings:
         llm_temperature=float(_env("LLM_TEMPERATURE", "0.2")),
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", 1500),
         ollama_base_url=_env("OLLAMA_BASE_URL", "http://localhost:11434"),
+        llm_rate_limit_retries=_env_int("LLM_RATE_LIMIT_RETRIES", 4),
+        llm_rate_limit_max_wait_s=_env_float("LLM_RATE_LIMIT_MAX_WAIT_S", 60.0),
+        llm_concurrency=max(1, _env_int("LLM_CONCURRENCY", 3)),
+        llm_fallbacks=tuple(fallbacks),
         embedding_provider=embedding_provider,
         embedding_model=embedding_model,
         embedding_api_key=embedding_api_key,
