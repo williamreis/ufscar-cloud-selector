@@ -32,6 +32,11 @@ A troca fica registrada. `LLMRunRecord.provider`/`model` dizem quem de fato
 respondeu, e `fallback_from` diz de quem a vez era — sem isso o relatório
 afirmaria que uma evidência veio de um modelo que nunca a viu.
 
+E a troca é lembrada: quando um provedor recusa por cota informando "tente em
+11s", esse prazo passa a valer para as chamadas seguintes, que pulam o elo direto
+em vez de repetir a mesma recusa. Uma avaliação faz uma chamada por (provedor ×
+dimensão) — sem essa memória, todas batem no primário só para ouvir o mesmo não.
+
 Sobre a extração do JSON: a §25 proíbe "regex improvisado para *salvar* conteúdo
 inválido e transformá-lo em nota". O que é feito aqui é diferente e anterior a
 isso — remover cerca de markdown e recortar o objeto JSON quando o modelo o
@@ -44,11 +49,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import random
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional, Protocol, Tuple, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -84,6 +91,37 @@ _RETRY_AFTER_PATTERN = re.compile(
     r"try again in\s+(?:(?P<min>[\d.]+)m)?(?P<sec>[\d.]+)s", re.IGNORECASE
 )
 
+# Mesma duração, quando ela vem sozinha num cabeçalho ("31.5s", "2m59.56s") em
+# vez de embutida na frase.
+_DURACAO_PATTERN = re.compile(r"(?:(?P<min>[\d.]+)m)?(?P<sec>[\d.]+)s", re.IGNORECASE)
+
+# Cabeçalhos que declaram a reposição, em ordem de precedência. `retry-after` é o
+# delta canônico do HTTP; os `x-ratelimit-reset*` variam de formato entre
+# provedores e por isso passam todos pelo mesmo tradutor.
+_RESET_HEADERS = (
+    "retry-after",
+    "x-ratelimit-reset-tokens",
+    "x-ratelimit-reset-requests",
+    "x-ratelimit-reset",
+)
+
+# O OpenRouter aninha os cabeçalhos de limite no **corpo** do 429
+# (`error.metadata.headers`) e não repete a janela em prosa. Sem ler isto daqui, a
+# recusa dele chega sem janela nenhuma e o cliente cai no backoff cego — foi o que
+# gastou quatro esperas por chamada contra um limite que só vira no outro dia.
+_RESET_BODY_PATTERN = re.compile(
+    r"['\"]x-ratelimit-reset['\"]\s*:\s*['\"]?(?P<valor>\d+)", re.IGNORECASE
+)
+
+# Marcas de teto por **dia** na recusa.
+#
+# A distinção entre teto por minuto e teto por dia é o que decide entre esperar e
+# desistir. Um teto de tokens por minuto passa em segundos e aguardar recupera a
+# extração; um teto diário só vira na virada do dia, e o orçamento de espera do
+# cliente é de dezenas de segundos — nenhuma tentativa o alcança, e cada uma só
+# soma latência à requisição do gestor.
+_MARCAS_LIMITE_DIARIO = ("per day", "per-day", "daily", "(tpd)", "(rpd)")
+
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -107,22 +145,237 @@ def _is_rate_limit(exc: Exception) -> bool:
     )
 
 
-def _suggested_wait(exc: Exception) -> Optional[float]:
-    """Tempo de espera que o provedor informou, em segundos, se informou."""
-    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
-    for chave in ("retry-after", "Retry-After", "x-ratelimit-reset-tokens"):
-        bruto = headers.get(chave) if hasattr(headers, "get") else None
-        if bruto:
-            try:
-                return float(str(bruto).rstrip("s"))
-            except ValueError:
-                pass
+def _janela_de_reset(bruto: Any) -> Optional[float]:
+    """
+    Traduz um valor de reposição em "segundos a partir de agora".
 
-    match = _RETRY_AFTER_PATTERN.search(str(exc))
+    Três formatos convivem entre os provedores suportados e só a ordem de grandeza
+    os separa: o OpenRouter manda epoch em **milissegundos** (`1787616000000`), há
+    quem mande epoch em segundos, e o `retry-after` do HTTP manda o delta já
+    pronto. Os cortes são folgados de propósito — nenhum delta plausível chega a
+    10^9 segundos (32 anos) e nenhum epoch atual fica abaixo disso.
+
+    Janela já vencida vira 0.0, e não um número negativo: relógio fora de sincronia
+    com o provedor é motivo para tentar de novo, não para esperar ao contrário.
+    """
+    texto = str(bruto).strip()
+    if not texto:
+        return None
+
+    match = _DURACAO_PATTERN.fullmatch(texto)
+    if match:
+        return float(match.group("min") or 0) * 60 + float(match.group("sec"))
+
+    try:
+        valor = float(texto)
+    except ValueError:
+        return None
+
+    if valor >= 1e12:  # epoch em milissegundos
+        return max(0.0, valor / 1000 - time.time())
+    if valor >= 1e9:  # epoch em segundos
+        return max(0.0, valor - time.time())
+    return max(0.0, valor)  # delta já relativo
+
+
+def _limite_diario(exc: Exception) -> bool:
+    """Teto por dia, e não por minuto: a janela é de horas, não de segundos."""
+    texto = str(exc).lower()
+    return any(marca in texto for marca in _MARCAS_LIMITE_DIARIO)
+
+
+def _suggested_wait(exc: Exception) -> Optional[float]:
+    """
+    Tempo de espera que o provedor informou, em segundos, se informou.
+
+    A ordem das fontes é a da confiabilidade. Cabeçalho vem antes do texto porque
+    é contrato; entre os textos, a frase "try again in 31.5s" vem antes do epoch
+    de reposição porque é um delta e não depende de os dois relógios concordarem.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    # Normaliza a caixa: `httpx.Headers` já é insensível, mas um dicionário simples
+    # (o duplo dos testes, um SDK que exponha o corpo cru) não é.
+    if hasattr(headers, "items"):
+        procura = {str(chave).lower(): valor for chave, valor in headers.items()}
+        for chave in _RESET_HEADERS:
+            janela = _janela_de_reset(procura.get(chave, ""))
+            if janela is not None:
+                return janela
+
+    texto = str(exc)
+    match = _RETRY_AFTER_PATTERN.search(texto)
     if match:
         minutos = float(match.group("min") or 0)
         return minutos * 60 + float(match.group("sec"))
+
+    match = _RESET_BODY_PATTERN.search(texto)
+    if match:
+        return _janela_de_reset(match.group("valor"))
     return None
+
+
+# Provedores em compasso de espera: nome → instante (relógio monotônico) a partir
+# do qual vale tentar de novo.
+#
+# Sem isto, **toda** chamada da avaliação bate no provedor primário só para tomar
+# o mesmo 429 e cair no fallback: com 9 extrações são 9 ida-e-voltas jogados fora,
+# e o gestor paga a latência de todas. Quando a Groq diz "tente em 11s", essa
+# informação vale para as chamadas seguintes, não só para aquela.
+#
+# É estado de processo e deliberadamente frouxo: expira sozinho, nunca impede a
+# última alternativa da cadeia de ser tentada, e no pior caso (reinício, vários
+# workers) só se perde a economia — nunca a correção.
+_provider_cooldown: Dict[str, float] = {}
+
+# Provedores que já responderam neste processo, e as sondagens em curso.
+#
+# Isto resolve a **primeira leva**, que o cooldown sozinho não alcança: ele só é
+# gravado quando a recusa *volta*, e com `LLM_CONCURRENCY=3` as três chamadas já
+# saíram antes disso — cada uma colhendo o mesmo não do mesmo provedor estourado.
+#
+# A regra é: enquanto o provedor não tiver respondido nenhuma vez neste processo,
+# **uma** chamada sonda e as demais aguardam o veredito dela em vez de saírem
+# junto. Aguardar, e não pular direto para o fallback, é deliberado: se o provedor
+# estiver de pé, todas seguem por ele e a avaliação inteira sai de um modelo só —
+# que é o que a §27 precisa poder afirmar no relatório. Assim que a sonda responde,
+# o provedor entra em `_provider_healthy` e a concorrência volta a correr solta;
+# se ela for recusada por cota, o cooldown já está gravado quando as outras acordam
+# e todas passam direto ao fallback, sem uma segunda chamada sequer.
+#
+# "Healthy" aqui é só "atende": saída que não valida no schema conta, porque o
+# provedor respondeu — aquilo é veredito de conteúdo da §25, não de disponibilidade.
+#
+# Não há lock porque não há concorrência real: as corrotinas rodam no mesmo laço de
+# eventos, e entre consultar `_provider_probe` e reivindicá-lo não existe await.
+_provider_healthy: set = set()
+_provider_probe: Dict[str, asyncio.Event] = {}
+
+# Estado de cota já lido do disco neste processo (ver `_carregar_cooldowns`).
+_cooldown_carregado = False
+
+
+def reset_provider_cooldowns() -> None:
+    """Zera as esperas registradas. Existe para os testes não vazarem estado."""
+    global _cooldown_carregado
+    _provider_cooldown.clear()
+    _provider_healthy.clear()
+    _provider_probe.clear()
+    _cooldown_carregado = False
+
+
+# --- Cota que sobrevive ao reinício -----------------------------------------
+#
+# O cooldown acima é estado de processo, e reiniciar o backend o apaga. O efeito
+# aparece no log: sobe o servidor, e a primeira avaliação volta a gastar chamadas
+# num provedor que já estava em cota diária havia 40 minutos — informação que o
+# processo anterior tinha e jogou fora ao morrer.
+#
+# Por isso a janela é gravada em disco, no mesmo volume persistente do banco de
+# auditoria. O que se grava é o **instante absoluto** de liberação, não o que
+# falta: o relógio monotônico não atravessa reinício, e um prazo relativo
+# gravado viraria uma janela nova a cada subida.
+#
+# É cache, não fonte de verdade: qualquer erro de leitura ou escrita é engolido e
+# o mecanismo volta a ser só de memória. Perder a economia é aceitável; deixar o
+# produto de pé não é negociável.
+
+
+def _carregar_cooldowns(caminho: Optional[Path]) -> None:
+    """Relê, uma vez por processo, as janelas de cota que a execução anterior deixou."""
+    global _cooldown_carregado
+    if _cooldown_carregado:
+        return
+    _cooldown_carregado = True
+    if caminho is None:
+        return
+
+    try:
+        gravado = json.loads(Path(caminho).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(gravado, dict):
+        return
+
+    agora_epoch = time.time()
+    for provider, ate_epoch in gravado.items():
+        try:
+            restante = float(ate_epoch) - agora_epoch
+        except (TypeError, ValueError):
+            continue
+        if restante > 0:
+            _provider_cooldown[str(provider)] = time.monotonic() + restante
+            logger.info(
+                "Provedor %s continua em espera de cota por mais %s (registro anterior).",
+                provider,
+                _duracao(restante),
+            )
+
+
+def _gravar_cooldowns(caminho: Optional[Path]) -> None:
+    """Persiste as janelas ainda vigentes, em instante absoluto."""
+    if caminho is None:
+        return
+    agora_mono, agora_epoch = time.monotonic(), time.time()
+    vigentes = {
+        provider: agora_epoch + (ate - agora_mono)
+        for provider, ate in _provider_cooldown.items()
+        if ate > agora_mono
+    }
+    destino = Path(caminho)
+    try:
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        # Escreve ao lado e renomeia: rename é atômico no mesmo sistema de
+        # arquivos, então nenhum outro worker lê um JSON pela metade.
+        provisorio = destino.parent / f"{destino.name}.{os.getpid()}.tmp"
+        provisorio.write_text(json.dumps(vigentes), encoding="utf-8")
+        provisorio.replace(destino)
+    except OSError as exc:  # volume só-leitura, disco cheio: segue de memória
+        logger.debug("Não foi possível persistir a espera de cota em %s: %s", destino, exc)
+
+
+def _duracao(segundos: float) -> str:
+    """'21min' em vez de '1280s' — o operador lê a janela, não o número bruto."""
+    if segundos >= 90:
+        return f"{segundos / 60:.0f}min"
+    return f"{segundos:.0f}s"
+
+
+def _cooldown_restante(provider: str) -> float:
+    """Segundos que ainda faltam para valer a pena tentar este provedor."""
+    ate = _provider_cooldown.get(provider)
+    if ate is None:
+        return 0.0
+    restante = ate - time.monotonic()
+    if restante <= 0:
+        _provider_cooldown.pop(provider, None)
+        return 0.0
+    return restante
+
+
+def _registrar_cooldown(
+    provider: str, exc: Exception, teto: float, caminho: Optional[Path] = None
+) -> None:
+    """
+    Anota até quando pular o provedor, usando a janela que ele mesmo informou.
+
+    A janela é respeitada por inteiro até `teto` — e `teto` aqui é o de *pular*,
+    não o de *esperar*. Quando o Groq estoura a cota diária ele pede 21 minutos;
+    encurtar isso para um minuto só faz as chamadas seguintes voltarem a colher a
+    mesma recusa.
+    """
+    janela = _suggested_wait(exc)
+    if janela is None:
+        # Sem janela declarada não se inventa uma longa: um respiro curto já evita
+        # a saraivada de chamadas idênticas. A exceção é a recusa que se declara
+        # diária — aí o respiro curto é que estaria errado, porque garante que as
+        # chamadas seguintes colham a mesma recusa, e o teto de pular é o palpite
+        # honesto na falta de um prazo do provedor.
+        janela = teto if _limite_diario(exc) else 5.0
+    _provider_cooldown[provider] = time.monotonic() + min(janela, teto)
+    # Quem acabou de recusar por cota deixa de ser "atende": a próxima leva volta
+    # a sondar com uma chamada só quando a janela expirar.
+    _provider_healthy.discard(provider)
+    _gravar_cooldowns(caminho)
 
 
 def _sem_saldo(exc: Exception) -> bool:
@@ -185,6 +438,12 @@ def _backoff_delay(exc: Exception, tentativa: int, teto: float) -> Optional[floa
     O jitter existe porque a extração dispara chamadas em paralelo: sem ele, as
     que tomaram 429 juntas voltariam juntas e tomariam 429 de novo.
     """
+    if _limite_diario(exc):
+        # Cota diária: a janela é de horas e nenhuma das esperas configuradas a
+        # alcança. Insistir aqui não recupera a extração — só entrega ao gestor a
+        # soma de todos os backoffs antes do mesmo LLM_UNAVAILABLE.
+        return None
+
     sugerido = _suggested_wait(exc)
     if sugerido is None:
         sugerido = min(2.0 ** tentativa, teto)
@@ -330,6 +589,14 @@ def _token_usage(message: Any) -> Dict[str, Optional[int]]:
     }
 
 
+def _finish_reason(message: Any) -> Optional[str]:
+    metadata = getattr(message, "response_metadata", None) or {}
+    if not isinstance(metadata, dict):
+        return None
+    razao = metadata.get("finish_reason") or metadata.get("stop_reason")
+    return str(razao) if razao else None
+
+
 def _message_text(message: Any) -> str:
     content = getattr(message, "content", message)
     if isinstance(content, str):
@@ -430,20 +697,60 @@ class LangChainLLMClient:
         self, prompt: RenderedPrompt, schema: Type[T], max_attempts: int = 2
     ) -> StructuredResult:
         cadeia = self._settings.llm_chain
+        estado = self._settings.llm_cooldown_state_path
+        _carregar_cooldowns(estado)
         detalhe: list = []
         resultado: Optional[StructuredResult] = None
 
         for indice, profile in enumerate(cadeia):
             tem_alternativa = indice + 1 < len(cadeia)
-            resultado, trocar = await self._generate_with(
-                profile,
-                prompt,
-                schema,
-                max_attempts,
-                detalhe,
-                tem_alternativa=tem_alternativa,
-                fallback_from=cadeia[0].provider if indice else None,
-            )
+
+            if tem_alternativa:
+                # Enquanto o provedor não tiver respondido neste processo, uma
+                # chamada sonda e as outras aguardam o veredito dela aqui. É o que
+                # impede a primeira leva de sair junta e colher, cada uma, a mesma
+                # recusa — o laço trata a sondagem que começa *enquanto* se espera.
+                while profile.provider not in _provider_healthy:
+                    sonda = _provider_probe.get(profile.provider)
+                    if sonda is None:
+                        break
+                    await sonda.wait()
+
+            # Provedor em cota é pulado enquanto a janela que ele pediu não passa —
+            # desde que haja para quem passar. O último elo é sempre tentado: pular
+            # todos devolveria falha sem ter chamado ninguém.
+            restante = _cooldown_restante(profile.provider) if tem_alternativa else 0.0
+            if restante > 0:
+                motivo = f"em espera de cota por mais {_duracao(restante)}"
+                logger.info("Pulando %s em %s: %s.", profile.provider, prompt.prompt_id, motivo)
+                detalhe.append(
+                    {"attempt": 0, "provider": profile.provider, "error": f"pulado: {motivo}"}
+                )
+                continue
+
+            # Reivindica a sondagem. Entre o `break` acima e esta linha não há
+            # await, então duas corrotinas não se reivindicam sondas ao mesmo tempo:
+            # a segunda a acordar já encontra o evento novo e volta a esperar.
+            sondando = tem_alternativa and profile.provider not in _provider_healthy
+            if sondando:
+                _provider_probe[profile.provider] = asyncio.Event()
+            try:
+                resultado, trocar = await self._generate_with(
+                    profile,
+                    prompt,
+                    schema,
+                    max_attempts,
+                    detalhe,
+                    tem_alternativa=tem_alternativa,
+                    fallback_from=cadeia[0].provider if indice else None,
+                    estado=estado,
+                )
+            finally:
+                if sondando:
+                    evento = _provider_probe.pop(profile.provider, None)
+                    if evento is not None:
+                        evento.set()
+
             if not trocar:
                 return resultado
             logger.warning(
@@ -455,8 +762,8 @@ class LangChainLLMClient:
             )
 
         # Cadeia inteira esgotada. `resultado` carrega a falha do último elo, que
-        # é a que o operador precisa ver. Não pode ser None: `llm_chain` sempre
-        # tem ao menos o provedor primário, então o laço rodou pelo menos uma vez.
+        # é a que o operador precisa ver. Não pode ser None: o último elo nunca é
+        # pulado por cooldown, então o laço chamou alguém pelo menos uma vez.
         if resultado is None:  # pragma: no cover — invariante da cadeia
             raise RuntimeError("cadeia de provedores vazia")
         return resultado
@@ -470,6 +777,7 @@ class LangChainLLMClient:
         attempts_detail: list,
         tem_alternativa: bool,
         fallback_from: Optional[str],
+        estado: Optional[Path] = None,
     ) -> Tuple[StructuredResult, bool]:
         """
         Uma passada completa (§25) num único provedor.
@@ -541,16 +849,37 @@ class LangChainLLMClient:
                     profile.provider,
                     exc,
                 )
+                if _is_rate_limit(exc) or _sem_saldo(exc):
+                    _registrar_cooldown(
+                        profile.provider, exc, float(self._settings.llm_cooldown_max_s), estado
+                    )
                 return falhou(
                     STATUS_UNAVAILABLE, attempt, str(exc), tem_alternativa and _pode_trocar(exc)
                 )
+
+            # O provedor respondeu: para efeito de disponibilidade ele atende, e a
+            # próxima leva pode sair em paralelo sem sondagem. Se a resposta não
+            # validar no schema, isso é veredito de conteúdo da §25 logo abaixo —
+            # outra coisa.
+            _provider_healthy.add(profile.provider)
 
             raw_text = _message_text(message)
             usage = _token_usage(message)
 
             payload = extract_json_object(raw_text)
             if payload is None:
-                last_error = "a resposta não contém um objeto JSON válido"
+                # Resposta cortada no teto de tokens é diagnóstico diferente de
+                # resposta malformada, e a diferença é acionável: uma pede outro
+                # prompt, a outra pede LLM_MAX_TOKENS maior. Modelos de raciocínio
+                # gastam o teto pensando antes de escrever o JSON, e é o caso em
+                # que isso mais aparece.
+                if _finish_reason(message) in ("length", "max_tokens"):
+                    last_error = (
+                        "a resposta foi truncada no teto de tokens "
+                        f"(LLM_MAX_TOKENS={self._settings.llm_max_tokens}) antes de fechar o JSON"
+                    )
+                else:
+                    last_error = "a resposta não contém um objeto JSON válido"
             else:
                 try:
                     data = schema.model_validate(payload)

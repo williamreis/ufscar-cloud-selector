@@ -34,6 +34,9 @@ export default function EvidenceCard({ ev }: { ev: EvidenceItem }) {
   const url = documentUrl(ev);
   const rel = relevanceLabel(ev.score);
   const pageText = ev.page_label || (ev.page ? String(ev.page) : null);
+  // Termos do Quadro 27 que o backend achou neste trecho. Ausência de tag não
+  // desqualifica o trecho: a recuperação é por similaridade, não por palavra.
+  const terms = ev.matched_terms ?? [];
 
   return (
     <article className="group rounded-xl border border-slate-200 bg-white p-4 transition-all hover:border-slate-300 hover:shadow-sm">
@@ -59,6 +62,29 @@ export default function EvidenceCard({ ev }: { ev: EvidenceItem }) {
       <blockquote className="border-l-2 border-slate-200 pl-3 text-sm leading-relaxed text-slate-600">
         {ev.page_content}
       </blockquote>
+
+      {terms.length > 0 && (
+        <div
+          className="mt-2.5 flex flex-wrap items-center gap-1.5"
+          title={
+            ev.indicator_name
+              ? `Quadro 27 — termos do indicador "${ev.indicator_name}" presentes neste trecho`
+              : "Quadro 27 — termos e expressões associados aos indicadores"
+          }
+        >
+          <span className="text-[11px] font-medium text-slate-400" aria-hidden>
+            🏷️
+          </span>
+          {terms.map((term) => (
+            <span
+              key={term}
+              className="rounded bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-inset ring-slate-200"
+            >
+              {term}
+            </span>
+          ))}
+        </div>
+      )}
 
       <footer className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         {ev.file_name ? (

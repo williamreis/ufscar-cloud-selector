@@ -166,6 +166,26 @@ async def rag_ingest(body: Optional[RagIngestRequest] = None):
     return job
 
 
+@router.post("/rag/reset", dependencies=[Depends(auth.require_admin)])
+async def rag_reset():
+    """
+    Apaga o índice vetorial e o registro dos documentos — sem lixeira.
+
+    A operação existe para o caso em que reingerir não resolve: trocado o modelo
+    de embedding, os vetores antigos não são comparáveis com os novos, e a única
+    saída é reconstruir a base do zero. Vão junto os vetores dos documentos
+    anexados em sessão (o índice é um só); os arquivos em disco ficam, e o rastro
+    de auditoria das avaliações também.
+
+    A confirmação é responsabilidade da interface, que mostra o que será apagado
+    antes de chamar aqui.
+    """
+    try:
+        return await run_in_threadpool(documents.reset_index)
+    except documents.IngestionInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/export.csv", dependencies=[Depends(auth.require_admin)])
 async def export_csv():
     rows = await run_in_threadpool(db.export_rows)

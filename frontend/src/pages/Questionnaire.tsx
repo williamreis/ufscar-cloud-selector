@@ -253,7 +253,7 @@ export default function Questionnaire() {
           inconsistencyBoxRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }),
         );
       } else {
-        setSubmitError(String(err));
+        setSubmitError(err instanceof Error ? err.message : String(err));
       }
     } finally {
       setSubmitting(false);

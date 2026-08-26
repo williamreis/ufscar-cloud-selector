@@ -4,6 +4,7 @@ import type {
   IngestResult,
   QuestionsFile,
   RagJob,
+  RagResetResult,
   RagStatus,
   RecommendationResponse,
   RecommendPayload,
@@ -47,14 +48,52 @@ export class InconsistentJudgmentsError extends Error {
   }
 }
 
+/**
+ * Teto do /api/recommend no cliente, alinhado ao `proxy_read_timeout` do nginx
+ * (ver frontend/nginx.conf — os dois precisam andar juntos).
+ *
+ * Existe porque sem ele a promessa simplesmente não resolve: o overlay de
+ * progresso fica girando para sempre e o gestor não tem o que fazer além de
+ * recarregar a página. Em dev o proxy do Vite não impõe timeout nenhum, então
+ * este é o único limite que existe.
+ *
+ * Dez minutos é folga sobre os 3 a 4 medidos numa avaliação completa em camada
+ * gratuita, não uma estimativa: cortar perto do fim jogaria fora o trabalho todo.
+ */
+const RECOMMEND_TIMEOUT_MS = 600_000;
+
+export class RecommendTimeoutError extends Error {
+  constructor() {
+    super(
+      "A geração passou de 10 minutos e foi interrompida. Isso costuma ser limite " +
+        "de taxa do provedor de LLM — verifique os logs do backend e tente de novo.",
+    );
+    this.name = "RecommendTimeoutError";
+  }
+}
+
 export async function postRecommend(
   payload: RecommendPayload,
 ): Promise<RecommendationResponse> {
-  const res = await fetch(`${API_BASE}/recommend`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RECOMMEND_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/recommend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new RecommendTimeoutError();
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 409) {
     const detail = await res
@@ -200,6 +239,17 @@ export function adminRagIngest(files?: string[]): Promise<RagJob> {
 /** Estado da ingestão em curso. Rota leve, própria para polling. */
 export function adminRagJob(): Promise<RagJob> {
   return adminFetch<RagJob>("/rag/ingest");
+}
+
+/**
+ * Apaga o índice vetorial e o registro dos documentos.
+ *
+ * Não há lixeira e não há como reaproveitar o que sai: a próxima base vem de
+ * uma ingestão nova. É a saída para o índice preso a um modelo de embedding que
+ * não está mais em uso — vetores de modelos diferentes não se comparam.
+ */
+export function adminRagReset(): Promise<RagResetResult> {
+  return adminFetch<RagResetResult>("/rag/reset", { method: "POST" });
 }
 
 /** Exclusão definitiva — não há lixeira no backend. */

@@ -42,7 +42,19 @@ def build_chat_model(
     profile = profile or settings.llm_primary
     provider = profile.provider
 
-    common = {"temperature": settings.llm_temperature}
+    # `max_retries=0` é a decisão central aqui. Os SDKs da Groq e da OpenAI
+    # repetem o 429 por conta própria e **dormem dentro da chamada** o tempo que
+    # o provedor pedir. Isso sequestra a política: a camada de cima nunca vê o
+    # limite de taxa, não consegue passar a vez para o fallback, e uma chamada de
+    # 3 segundos vira uma de 80. Quem decide esperar ou trocar é o `LLMClient`.
+    #
+    # `request_timeout` fecha o outro buraco: sem teto, uma chamada pendurada
+    # segura a avaliação inteira e a tela do gestor gira para sempre.
+    common = {
+        "temperature": settings.llm_temperature,
+        "max_retries": 0,
+        "request_timeout": settings.llm_timeout_s,
+    }
 
     try:
         if provider == "groq":
@@ -74,7 +86,9 @@ def build_chat_model(
                 google_api_key=profile.api_key,
                 model=profile.model,
                 max_output_tokens=settings.llm_max_tokens,
-                **common,
+                temperature=settings.llm_temperature,
+                max_retries=0,
+                timeout=settings.llm_timeout_s,  # aqui o parâmetro chama-se `timeout`
             )
 
         if provider == "ollama":
@@ -82,10 +96,12 @@ def build_chat_model(
 
             # Sem max_tokens: no Ollama o limite equivalente é `num_predict`, e
             # deixá-lo no default do servidor é o comportamento que já valia.
+            # Sem max_retries/request_timeout: a integração do Ollama não os
+            # expõe. Também não faz falta — servidor local não impõe cota.
             return ChatOllama(
                 base_url=settings.ollama_base_url,
                 model=profile.model,
-                **common,
+                temperature=settings.llm_temperature,
             )
 
         from langchain_openai import ChatOpenAI

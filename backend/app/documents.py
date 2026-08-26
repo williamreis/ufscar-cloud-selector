@@ -234,6 +234,54 @@ async def start_global_ingestion(file_names: Optional[List[str]] = None) -> Dict
     return {**current_job(), "paths": paths}
 
 
+def reset_index() -> Dict[str, Any]:
+    """
+    Zera a base vetorial: apaga o índice FAISS e o registro dos documentos.
+
+    Existe por causa de uma situação que não tem outra saída: **o índice está
+    preso ao modelo de embedding que o gerou**. Os vetores de um modelo não são
+    comparáveis com os de outro (nem sequer têm a mesma dimensão), e o FAISS não
+    converte — trocado o modelo, a base precisa ser reconstruída do zero, e
+    reingerir por cima só somaria vetores de duas geometrias no mesmo índice.
+
+    Apaga também os vetores dos documentos anexados em sessão: o índice é um só,
+    e escolher o que fica seria fingir uma separação que ele não tem. Os PDFs em
+    `data/pdf` e em `data/upload` continuam no disco — o que sai é o índice, não
+    a fonte.
+
+    O rastro de auditoria não é tocado (ver `db.clear_documents`).
+    """
+    if _job["state"] == STATE_RUNNING:
+        raise IngestionInProgress(
+            "Há uma ingestão em andamento. Espere terminar antes de limpar o índice."
+        )
+
+    # Contado antes de apagar, e sem deixar a contagem impedir a limpeza: com o
+    # modelo de embedding trocado, é justamente `load()` que pode falhar — e
+    # seria absurdo não conseguir limpar o índice justo no caso em que limpar é
+    # a única saída.
+    try:
+        chunks_removed: Optional[int] = rag.count_chunks()
+    except Exception as exc:  # noqa: BLE001 - a causa vai para o log, não para o usuário
+        logger.warning("Não foi possível contar os trechos antes da limpeza: %s", exc)
+        chunks_removed = None
+
+    index_removed = rag.delete_index()
+    documents_cleared = db.clear_documents()
+    _document_id_cache.clear()
+
+    logger.info(
+        "Base vetorial limpa: índice %s, %s documento(s) desregistrado(s).",
+        "removido" if index_removed else "já não existia",
+        documents_cleared,
+    )
+    return {
+        "index_removed": index_removed,
+        "documents_cleared": documents_cleared,
+        "chunks_removed": chunks_removed,
+    }
+
+
 # Hash do conteúdo por (caminho, mtime, tamanho). O inventário é consultado a
 # cada abertura do painel e a cada acompanhamento de ingestão; sem cache, cada
 # consulta releria a base inteira do disco só para recalcular ids que não mudaram.
@@ -303,6 +351,23 @@ def global_inventory() -> Dict[str, Any]:
         )
 
     chunk_counts = rag.count_chunks_by_provider()
+    # O modelo que **gerou** o índice, lido do registro dos documentos, ao lado
+    # do que está configurado agora. Quando divergem, o índice existente não
+    # responde a busca nenhuma: os vetores de um modelo não são comparáveis com
+    # os de outro. É uma falha silenciosa por natureza — a busca não acha nada e
+    # nada acusa —, então o inventário precisa dizer.
+    index_models = {
+        (record.get("embedding_provider"), record.get("embedding_model"))
+        for record in registered.values()
+        if record.get("embedding_model")
+    }
+    index_provider, index_model = (
+        next(iter(index_models)) if len(index_models) == 1 else (None, None)
+    )
+    embedding_mismatch = bool(
+        index_models
+        and (settings.embedding_provider, settings.embedding_model) not in index_models
+    )
     return {
         "pdf_dir": str(pdf_dir()),
         "allowed_extensions": list(allowed_extensions()),
@@ -310,6 +375,11 @@ def global_inventory() -> Dict[str, Any]:
         "job": current_job(),
         "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
+        # Nulos quando o índice foi gerado por mais de um modelo (base misturada,
+        # que a limpeza resolve) ou quando nenhum documento está registrado.
+        "index_embedding_provider": index_provider,
+        "index_embedding_model": index_model,
+        "embedding_mismatch": embedding_mismatch,
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
         "files": files,
@@ -337,6 +407,7 @@ __all__ = [
     "global_paths",
     "list_files",
     "pdf_dir",
+    "reset_index",
     "run_ingestion",
     "start_global_ingestion",
     "upload_base_dir",

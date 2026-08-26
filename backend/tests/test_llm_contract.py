@@ -10,6 +10,7 @@ rede nem de chave de API.
 """
 
 import asyncio
+import time
 from dataclasses import replace
 
 import pytest
@@ -56,6 +57,24 @@ class FakeModel:
 class ModeloQuebrado:
     async def ainvoke(self, messages):
         raise RuntimeError("conexão recusada")
+
+
+@pytest.fixture(autouse=True)
+def _sem_cooldown_vazado(tmp_path, monkeypatch):
+    """
+    A espera de cota é estado de processo **e de disco** (ver `llm.client`).
+
+    Sem zerar entre os testes, um 429 encenado num teste faria o seguinte pular o
+    provedor primário — e o teste passaria ou falharia conforme a ordem da suíte.
+    O arquivo é redirecionado para o tmp pelo mesmo motivo, elevado: sem isso a
+    suíte grava no volume de dados real e a recusa encenada sobrevive à própria
+    suíte, atrapalhando a execução seguinte e o backend da máquina.
+    """
+    llm_client.reset_provider_cooldowns()
+    fake = replace(get_settings(), llm_cooldown_state_path=tmp_path / "llm_cooldown.json")
+    monkeypatch.setattr(llm_client, "get_settings", lambda: fake)
+    yield
+    llm_client.reset_provider_cooldowns()
 
 
 def _run(coro):
@@ -256,7 +275,8 @@ def _cliente(modelo, **overrides):
     haver, ou não, uma OPENROUTER_API_KEY no `.env` de quem roda.
     """
     overrides.setdefault("llm_fallbacks", ())
-    return LangChainLLMClient(settings=replace(get_settings(), **overrides), model=modelo)
+    base = llm_client.get_settings()
+    return LangChainLLMClient(settings=replace(base, **overrides), model=modelo)
 
 
 _MENSAGEM_429 = (
@@ -362,7 +382,7 @@ _MENSAGEM_SEM_SALDO = (
 def _cliente_em_cadeia(primario, fallback, **overrides):
     """Groq no primeiro elo, OpenRouter no segundo — a configuração padrão."""
     settings = replace(
-        get_settings(),
+        llm_client.get_settings(),
         llm_provider="groq",
         llm_model="openai/gpt-oss-120b",
         llm_api_key="chave-groq",
@@ -485,6 +505,10 @@ def test_cadeia_padrao_e_groq_seguido_de_openrouter(monkeypatch):
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "chave-groq")
     monkeypatch.setenv("OPENROUTER_API_KEY", "chave-openrouter")
+    # Fixado aqui pelo mesmo motivo que `_cliente` zera a cadeia: sem isto o teste
+    # lê o OPENROUTER_MODEL do `.env` de quem roda e passa a afirmar coisas sobre a
+    # instalação local em vez de sobre o código.
+    monkeypatch.setenv("OPENROUTER_MODEL", "modelo/do-openrouter")
 
     settings = reload_settings()
     try:
@@ -493,7 +517,27 @@ def test_cadeia_padrao_e_groq_seguido_de_openrouter(monkeypatch):
         # ao OpenRouter um nome de modelo que só existe no Groq.
         primario, fallback = settings.llm_chain
         assert primario.model == "openai/gpt-oss-120b" and primario.api_key == "chave-groq"
-        assert fallback.model.startswith("meta-llama/") and fallback.api_key == "chave-openrouter"
+        assert fallback.model == "modelo/do-openrouter" and fallback.api_key == "chave-openrouter"
+    finally:
+        reload_settings()
+
+
+def test_default_do_openrouter_e_gratuito(monkeypatch):
+    """
+    Sem OPENROUTER_MODEL no ambiente, o fallback é uma variante ":free".
+
+    Um valor que ninguém escolheu não pode começar a gastar crédito. Quem tem
+    saldo e quer usá-lo tira o sufixo no `.env` — e é por isso que o teste acima
+    não pode exigir `:free` do modelo *configurado*, só deste default.
+    """
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "chave-openrouter")
+
+    settings = reload_settings()
+    try:
+        fallback = next(p for p in settings.llm_chain if p.provider == "openrouter")
+        assert fallback.model.endswith(":free")
     finally:
         reload_settings()
 
@@ -511,3 +555,416 @@ def test_override_de_modelo_nao_vaza_para_o_fallback(monkeypatch):
         assert settings.llm_fallbacks[0].model != "openai/gpt-oss-20b"
     finally:
         reload_settings()
+
+
+def test_resposta_truncada_e_diagnosticada_como_truncada():
+    """
+    Cortada no teto de tokens ≠ malformada.
+
+    A diferença é acionável: uma pede outro prompt, a outra pede
+    LLM_MAX_TOKENS maior. Confundir as duas foi o que escondeu, por uma
+    avaliação inteira, que a extração perdia todas as dimensões por truncamento.
+    """
+
+    class Truncada(FakeMessage):
+        response_metadata = {"finish_reason": "length"}
+
+    cortado = '{"notes": "começou a responder mas não fech'
+    modelo = FakeModel(Truncada(cortado), Truncada(cortado))
+    result = _run(_cliente(modelo).structured_generate(_prompt(), Resposta))
+
+    assert result.run.status == STATUS_OUTPUT_INVALID
+    assert "truncada" in result.run.error and "LLM_MAX_TOKENS" in result.run.error
+
+
+# --- Memória da recusa por cota --------------------------------------------
+
+
+def test_provedor_que_recusou_por_cota_e_pulado_na_chamada_seguinte(monkeypatch):
+    """
+    A janela que o provedor informou vale para as chamadas seguintes.
+
+    Uma avaliação faz uma chamada por (provedor × dimensão). Sem esta memória,
+    todas batem no primário só para ouvir o mesmo 429 — nove ida-e-voltas
+    jogados fora, e o gestor esperando por todas.
+    """
+    _sem_espera(monkeypatch)
+    groq = FakeModel(RateLimitError(_MENSAGEM_429))  # uma recusa só: não há segunda
+    openrouter = FakeModel(
+        FakeMessage('{"notes":"primeira"}'), FakeMessage('{"notes":"segunda"}')
+    )
+    cliente = _cliente_em_cadeia(groq, openrouter)
+
+    primeira = _run(cliente.structured_generate(_prompt(), Resposta))
+    segunda = _run(cliente.structured_generate(_prompt(), Resposta))
+
+    assert primeira.ok and segunda.ok
+    assert primeira.data.notes == "primeira" and segunda.data.notes == "segunda"
+    # A segunda nem tentou a Groq: o duplo tinha uma resposta só e não estourou.
+    assert len(groq.chamadas) == 1
+    assert len(openrouter.chamadas) == 2
+    assert segunda.run.provider == "openrouter" and segunda.run.fallback_from == "groq"
+
+
+def test_espera_de_cota_expira_sozinha(monkeypatch):
+    """O compasso de espera é um respiro, não um banimento."""
+    _sem_espera(monkeypatch)
+    groq = FakeModel(RateLimitError(_MENSAGEM_429), FakeMessage('{"notes":"groq de volta"}'))
+    openrouter = FakeModel(FakeMessage('{"notes":"fallback"}'))
+    cliente = _cliente_em_cadeia(groq, openrouter)
+
+    _run(cliente.structured_generate(_prompt(), Resposta))
+
+    # Adianta o relógio para além da janela de 31s que a mensagem pediu.
+    agora = llm_client.time.monotonic()
+    monkeypatch.setattr(llm_client.time, "monotonic", lambda: agora + 120)
+
+    segunda = _run(cliente.structured_generate(_prompt(), Resposta))
+    assert segunda.ok and segunda.data.notes == "groq de volta"
+    assert segunda.run.provider == "groq" and segunda.run.fallback_from is None
+
+
+def test_ultimo_elo_nunca_e_pulado(monkeypatch):
+    """Pular todos devolveria falha sem ter chamado ninguém."""
+    _sem_espera(monkeypatch)
+    llm_client._provider_cooldown["openrouter"] = llm_client.time.monotonic() + 300
+    groq = FakeModel(RateLimitError(_MENSAGEM_429))
+    openrouter = FakeModel(FakeMessage('{"notes":"atendeu mesmo em espera"}'))
+
+    result = _run(_cliente_em_cadeia(groq, openrouter).structured_generate(_prompt(), Resposta))
+
+    assert result.ok and result.run.provider == "openrouter"
+
+
+def test_falha_que_nao_e_cota_nao_gera_espera(monkeypatch):
+    """Chave recusada não é congestionamento: não há janela para respeitar."""
+    _sem_espera(monkeypatch)
+    groq = FakeModel(RateLimitError("Error code: 401 - invalid_api_key", status_code=401))
+    openrouter = FakeModel(FakeMessage('{"notes":"x"}'))
+
+    _run(_cliente_em_cadeia(groq, openrouter).structured_generate(_prompt(), Resposta))
+
+    assert llm_client._provider_cooldown == {}
+
+
+_MENSAGEM_COTA_DIARIA = (
+    "Error code: 429 - {'error': {'message': 'Rate limit reached for model "
+    "`openai/gpt-oss-120b` on tokens per day (TPD): Limit 200000, Used 195210, "
+    "Requested 7754. Please try again in 21m20.448s.', 'code': 'rate_limit_exceeded'}}"
+)
+
+
+def test_janela_de_cota_diaria_e_respeitada_por_inteiro(monkeypatch):
+    """
+    Pular não custa espera, logo não usa o orçamento de espera.
+
+    O Groq pede 21 minutos ao estourar a cota diária. Truncar isso no teto de
+    `LLM_RATE_LIMIT_MAX_WAIT_S` (60s) fazia as chamadas voltarem a bater na mesma
+    recusa um minuto depois — que é o defeito que este teste tranca.
+    """
+    _sem_espera(monkeypatch)
+    groq = FakeModel(RateLimitError(_MENSAGEM_COTA_DIARIA))
+    openrouter = FakeModel(FakeMessage('{"notes":"ok"}'))
+
+    _run(
+        _cliente_em_cadeia(
+            groq, openrouter, llm_rate_limit_max_wait_s=60.0, llm_cooldown_max_s=1800.0
+        ).structured_generate(_prompt(), Resposta)
+    )
+
+    restante = llm_client._cooldown_restante("groq")
+    assert restante > 1200  # os 21 minutos declarados, e não os 60s de espera
+
+
+def test_teto_de_cooldown_limita_janela_absurda(monkeypatch):
+    """Prazo declarado é do provedor; ficar horas fora dele é decisão nossa."""
+    _sem_espera(monkeypatch)
+    groq = FakeModel(RateLimitError("Rate limit reached. Please try again in 600m0s."))
+    openrouter = FakeModel(FakeMessage('{"notes":"ok"}'))
+
+    _run(
+        _cliente_em_cadeia(groq, openrouter, llm_cooldown_max_s=1800.0).structured_generate(
+            _prompt(), Resposta
+        )
+    )
+
+    assert llm_client._cooldown_restante("groq") <= 1800
+
+
+# --- Cota diária: o 429 que não passa esperando ------------------------------
+#
+# O Groq anuncia a cota diária em prosa ("try again in 21m20.448s") e o OpenRouter
+# não anuncia em prosa nenhuma: manda o epoch de reposição, em milissegundos,
+# aninhado no corpo do erro. As duas formas precisam produzir a mesma decisão —
+# não esperar —, porque a janela é de horas e o orçamento de espera é de segundos.
+
+_MENSAGEM_OPENROUTER_DIARIA = (
+    "Error code: 429 - {'error': {'message': 'Rate limit exceeded: free-models-per-day. "
+    "Add 5 credits to unlock 1000 free model requests per day', 'code': 429, "
+    "'metadata': {'headers': {'X-RateLimit-Limit': '50', 'X-RateLimit-Remaining': '0', "
+    "'X-RateLimit-Reset': '%d'}, 'limit_source': 'openrouter_free_tier_daily'}}}"
+)
+
+
+def _recusa_openrouter(segundos_ate_a_reposicao=7200.0):
+    """O 429 real do OpenRouter, com o epoch de reposição em milissegundos."""
+    epoch_ms = int((time.time() + segundos_ate_a_reposicao) * 1000)
+    return RateLimitError(_MENSAGEM_OPENROUTER_DIARIA % epoch_ms)
+
+
+def test_janela_do_openrouter_sai_do_epoch_de_reposicao():
+    """Epoch em milissegundos no corpo do 429 é janela declarada, não ausência dela."""
+    assert llm_client._suggested_wait(_recusa_openrouter(7200.0)) == pytest.approx(7200, abs=5)
+
+
+def test_epoch_de_reposicao_vencido_nao_vira_espera_negativa():
+    """Relógio fora de sincronia manda tentar de novo, não esperar ao contrário."""
+    assert llm_client._suggested_wait(_recusa_openrouter(-3600.0)) == 0.0
+
+
+def test_cota_diaria_nao_gasta_o_orcamento_de_espera(monkeypatch):
+    """
+    No último elo, cota diária falha na hora — sem as quatro esperas.
+
+    O orçamento de espera existe para o teto por minuto, que passa em segundos.
+    Contra um limite que só vira no outro dia nenhuma tentativa tem chance, e
+    insistir só entregava ao gestor a soma dos backoffs antes do mesmo
+    LLM_UNAVAILABLE — cerca de 17s por chamada, multiplicados por LLM_CONCURRENCY.
+    """
+    dormidas = _sem_espera(monkeypatch)
+    modelo = FakeModel(_recusa_openrouter())
+
+    result = _run(
+        _cliente(modelo, llm_rate_limit_retries=4).structured_generate(_prompt(), Resposta)
+    )
+
+    assert result.run.status == STATUS_UNAVAILABLE
+    assert len(modelo.chamadas) == 1
+    assert dormidas == []
+
+
+def test_teto_por_minuto_continua_valendo_a_espera(monkeypatch):
+    """
+    A contraprova do teste acima: TPM não é TPD.
+
+    Uma detecção de "diário" larga demais transformaria o limite por minuto —
+    que passa sozinho em 31s e devolve a extração da dimensão — em
+    LLM_UNAVAILABLE imediato.
+    """
+    dormidas = _sem_espera(monkeypatch)
+    modelo = FakeModel(RateLimitError(_MENSAGEM_429), FakeMessage('{"notes":"depois da espera"}'))
+
+    cliente = _cliente(modelo, llm_rate_limit_retries=2)
+    result = _run(cliente.structured_generate(_prompt(), Resposta))
+
+    assert result.ok
+    assert len(dormidas) == 1
+
+
+def test_cooldown_do_openrouter_sai_do_epoch_de_reposicao(monkeypatch):
+    """Sem ler o epoch, a recusa do OpenRouter valia 5s de respiro — e voltava igual."""
+    _sem_espera(monkeypatch)
+    groq = FakeModel(_recusa_openrouter(7200.0))
+    openrouter = FakeModel(FakeMessage('{"notes":"ok"}'))
+
+    _run(
+        _cliente_em_cadeia(groq, openrouter, llm_cooldown_max_s=1800.0).structured_generate(
+            _prompt(), Resposta
+        )
+    )
+
+    assert llm_client._cooldown_restante("groq") == pytest.approx(1800, abs=5)
+
+
+def test_cota_diaria_sem_prazo_declarado_usa_o_teto_de_cooldown(monkeypatch):
+    """
+    Recusa que se diz diária mas não diz até quando: 5s de respiro é o palpite errado.
+
+    Cinco segundos garantem que a próxima chamada colha a mesma recusa. Na falta de
+    prazo do provedor, o teto de pular é o palpite honesto — pular não custa espera.
+    """
+    _sem_espera(monkeypatch)
+    groq = FakeModel(RateLimitError("Rate limit exceeded: free-models-per-day"))
+    openrouter = FakeModel(FakeMessage('{"notes":"ok"}'))
+
+    _run(
+        _cliente_em_cadeia(groq, openrouter, llm_cooldown_max_s=1800.0).structured_generate(
+            _prompt(), Resposta
+        )
+    )
+
+    assert llm_client._cooldown_restante("groq") > 1200
+
+
+def test_primeira_leva_nao_colhe_a_mesma_recusa_em_coro():
+    """
+    Processo recém-subido, Groq em cota: **uma** chamada descobre isso, não quatro.
+
+    Este é o caso que o cooldown sozinho não alcançava. Ele só é gravado quando a
+    recusa *volta*, e com LLM_CONCURRENCY=3 as três chamadas já saíram antes disso
+    — o log de produção mostrava três 429 idênticos do Groq em sequência, todos
+    depois de "Application startup complete". Nada é semeado aqui de propósito: o
+    estado começa vazio, como num backend que acabou de subir.
+    """
+    # Sem `_sem_espera` de propósito: ele troca o `asyncio.sleep` do módulo, e o
+    # cenário abaixo precisa do sleep de verdade para ceder ao laço de eventos.
+    # Não há espera a suprimir — com alternativa na cadeia, o 429 não espera.
+    liberar = asyncio.Event()
+
+    class GroqLento:
+        def __init__(self):
+            self.chamadas = 0
+
+        async def ainvoke(self, messages):
+            self.chamadas += 1
+            await liberar.wait()
+            raise RateLimitError(_MENSAGEM_429)
+
+    class OpenRouterOk:
+        def __init__(self):
+            self.chamadas = 0
+
+        async def ainvoke(self, messages):
+            self.chamadas += 1
+            return FakeMessage('{"notes":"fallback"}')
+
+    groq, openrouter = GroqLento(), OpenRouterOk()
+    cliente = _cliente_em_cadeia(groq, openrouter)
+
+    async def cenario():
+        sonda = asyncio.create_task(cliente.structured_generate(_prompt(), Resposta))
+        await asyncio.sleep(0)  # deixa a sonda chegar ao await de rede
+        irmas = [
+            asyncio.create_task(cliente.structured_generate(_prompt(), Resposta))
+            for _ in range(3)
+        ]
+        await asyncio.sleep(0)  # deixa as irmãs chegarem ao await da sondagem
+        liberar.set()
+        return [await sonda, *[await irma for irma in irmas]]
+
+    resultados = asyncio.run(cenario())
+
+    assert all(r.ok for r in resultados)
+    assert groq.chamadas == 1  # uma sonda, não quatro
+    assert openrouter.chamadas == 4
+    # As irmãs não passaram pelo Groq: acordaram com o cooldown já gravado.
+    assert all(
+        any("pulado" in str(d.get("error")) for d in r.attempts_detail)
+        for r in resultados[1:]
+    )
+
+
+def test_provedor_que_responde_nao_serializa_as_chamadas_seguintes():
+    """
+    A sondagem vale enquanto o estado é desconhecido, e só.
+
+    Depois que o provedor respondeu uma vez, a concorrência volta a correr solta.
+    Sem isto, o mecanismo que economiza chamadas num provedor morto passaria a
+    somar latência num provedor vivo — LLM_CONCURRENCY=3 viraria 1 na prática.
+    """
+
+    class GroqQueConta:
+        def __init__(self):
+            self.chamadas = []
+            self.em_voo = 0
+            self.pico = 0
+            self.liberar = asyncio.Event()
+
+        async def ainvoke(self, messages):
+            self.chamadas.append(messages)
+            self.em_voo += 1
+            self.pico = max(self.pico, self.em_voo)
+            await self.liberar.wait()
+            self.em_voo -= 1
+            return FakeMessage('{"notes":"ok"}')
+
+    groq = GroqQueConta()
+    cliente = _cliente_em_cadeia(groq, FakeModel())
+
+    async def cenario():
+        groq.liberar.set()
+        await cliente.structured_generate(_prompt(), Resposta)  # a sonda
+        groq.liberar.clear()
+
+        trio = [
+            asyncio.create_task(cliente.structured_generate(_prompt(), Resposta))
+            for _ in range(3)
+        ]
+        for _ in range(3):
+            await asyncio.sleep(0)  # deixa as três chegarem ao await de rede
+        groq.liberar.set()
+        return await asyncio.gather(*trio)
+
+    resultados = asyncio.run(cenario())
+
+    assert all(r.ok for r in resultados)
+    assert groq.pico == 3  # as três em voo ao mesmo tempo, não enfileiradas
+
+
+def test_espera_de_cota_sobrevive_ao_reinicio(monkeypatch, tmp_path):
+    """
+    Reiniciar o backend não devolve ao provedor em cota o crédito de ser tentado.
+
+    O log de produção começava em "Application startup complete" e logo depois
+    gastava chamadas num Groq que estava em cota diária havia 40 minutos —
+    informação que o processo anterior tinha e perdeu ao morrer. A janela é
+    gravada em instante absoluto justamente porque o relógio monotônico não
+    atravessa reinício.
+    """
+    _sem_espera(monkeypatch)
+    estado = tmp_path / "reinicio.json"
+
+    groq = FakeModel(RateLimitError(_MENSAGEM_COTA_DIARIA))
+    _run(
+        _cliente_em_cadeia(
+            groq, FakeModel(FakeMessage('{"notes":"ok"}')), llm_cooldown_state_path=estado
+        ).structured_generate(_prompt(), Resposta)
+    )
+    assert estado.exists()
+
+    # Reinício: tudo o que era memória do processo se perde.
+    llm_client.reset_provider_cooldowns()
+    assert llm_client._cooldown_restante("groq") == 0.0
+
+    groq_novo = FakeModel(FakeMessage('{"notes":"não deveria ser chamado"}'))
+    openrouter = FakeModel(FakeMessage('{"notes":"ok"}'))
+    result = _run(
+        _cliente_em_cadeia(
+            groq_novo, openrouter, llm_cooldown_state_path=estado
+        ).structured_generate(_prompt(), Resposta)
+    )
+
+    assert result.ok and result.run.provider == "openrouter"
+    assert groq_novo.chamadas == []  # nem uma chamada gasta no provedor em cota
+
+
+def test_janela_vencida_no_disco_nao_bloqueia_o_provedor(monkeypatch, tmp_path):
+    """O registro expira sozinho: cache que não se limpa vira provedor desligado."""
+    _sem_espera(monkeypatch)
+    estado = tmp_path / "vencido.json"
+    estado.write_text('{"groq": 1}', encoding="utf-8")  # epoch de 1970
+
+    groq = FakeModel(FakeMessage('{"notes":"groq atendeu"}'))
+    result = _run(
+        _cliente_em_cadeia(
+            groq, FakeModel(), llm_cooldown_state_path=estado
+        ).structured_generate(_prompt(), Resposta)
+    )
+
+    assert result.ok and result.run.provider == "groq"
+
+
+def test_estado_de_cota_corrompido_nao_derruba_a_chamada(monkeypatch, tmp_path):
+    """É cache, não fonte de verdade: erro de leitura volta a ser só memória."""
+    _sem_espera(monkeypatch)
+    estado = tmp_path / "corrompido.json"
+    estado.write_text("{isto não é json", encoding="utf-8")
+
+    groq = FakeModel(FakeMessage('{"notes":"groq atendeu"}'))
+    result = _run(
+        _cliente_em_cadeia(
+            groq, FakeModel(), llm_cooldown_state_path=estado
+        ).structured_generate(_prompt(), Resposta)
+    )
+
+    assert result.ok and result.run.provider == "groq"
