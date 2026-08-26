@@ -285,6 +285,11 @@ export interface EvidenceItem {
   /** Indicador cuja consulta recuperou este trecho */
   indicator_id?: string;
   indicator_name?: string;
+  /**
+   * Termos do Quadro 27 (do indicador acima) que aparecem neste trecho.
+   * Vazio quando o trecho veio por similaridade, sem casar termo à letra.
+   */
+  matched_terms?: string[];
   file_name?: string | null;
   /** 1-indexed, pronto para exibição e para o fragmento #page=N do viewer de PDF */
   page?: number | null;
@@ -443,6 +448,14 @@ export interface RagStatus {
   job: RagJob;
   embedding_provider: string;
   embedding_model: string;
+  /**
+   * Modelo que gerou o índice existente, lido do registro dos documentos.
+   * Nulo quando não há documento registrado ou quando o índice mistura modelos.
+   */
+  index_embedding_provider: string | null;
+  index_embedding_model: string | null;
+  /** O índice foi gerado por outro modelo — nenhuma busca encontra nada. */
+  embedding_mismatch: boolean;
   chunk_size: number;
   chunk_overlap: number;
   files: RagFile[];
@@ -451,6 +464,14 @@ export interface RagStatus {
   documents_indexed: number;
   chunks_total: number;
   providers: { id: string; name: string; chunks: number }[];
+}
+
+/** Resultado da limpeza da base vetorial. `chunks_removed` é nulo quando o
+ *  índice não pôde sequer ser lido para contar — o caso do modelo trocado. */
+export interface RagResetResult {
+  index_removed: boolean;
+  documents_cleared: number;
+  chunks_removed: number | null;
 }
 
 export interface UploadedFile {

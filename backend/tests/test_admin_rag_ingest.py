@@ -13,6 +13,7 @@ embedding nem constrói índice FAISS.
 import importlib
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +27,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AUDIT_DB_PATH", str(tmp_path / "audit.db"))
     monkeypatch.setenv("PDF_DIR", str(tmp_path / "pdf"))
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "upload"))
+    # A limpeza da base apaga arquivos de verdade: sem isolar o caminho, um teste
+    # de `/rag/reset` apagaria o índice da instalação em que a suíte roda.
+    monkeypatch.setenv("VECTOR_DB_PATH", str(tmp_path / "faiss_index"))
 
     import config
 
@@ -286,6 +290,149 @@ def test_diretorio_vazio_responde_sem_erro(client):
     assert corpo["state"] == "idle"
     assert corpo["result"] is None
     assert "data/pdf" in corpo["message"]
+
+
+# --- Limpeza da base vetorial ----------------------------------------------
+
+
+def _indice_falso(client, trechos: int = 7, monkeypatch=None):
+    """
+    Escreve os dois arquivos que o FAISS persiste e finge a contagem.
+
+    O conteúdo não é um índice de verdade — o que estes testes verificam é que a
+    limpeza apaga os arquivos e o registro, não que o FAISS saiba lê-los.
+    """
+    import config
+
+    caminho = Path(config.get_settings().vector_db_path)
+    caminho.mkdir(parents=True, exist_ok=True)
+    (caminho / "index.faiss").write_bytes(b"faiss")
+    (caminho / "index.pkl").write_bytes(b"pickle")
+    if monkeypatch is not None:
+        monkeypatch.setattr(client.documents.rag, "count_chunks", lambda: trechos)
+    return caminho
+
+
+def test_limpeza_exige_token(client):
+    assert client.post("/api/admin/rag/reset").status_code == 401
+
+
+def test_limpeza_apaga_o_indice_e_desregistra_os_documentos(client, monkeypatch):
+    _documento(client)
+    _duplo_de_ingestao(client, monkeypatch)
+    headers = _token(client)
+    client.post("/api/admin/rag/ingest", headers=headers)
+    _aguarda_conclusao(client, headers)
+    caminho = _indice_falso(client, trechos=7, monkeypatch=monkeypatch)
+
+    corpo = client.post("/api/admin/rag/reset", headers=headers).json()
+    assert corpo == {"index_removed": True, "documents_cleared": 1, "chunks_removed": 7}
+    assert not (caminho / "index.faiss").exists()
+    assert not (caminho / "index.pkl").exists()
+
+    depois = client.get("/api/admin/rag/status", headers=headers).json()
+    assert depois["index_ready"] is False
+    assert depois["documents_indexed"] == 0
+    # O arquivo continua em data/pdf e volta a constar como pendente: o que foi
+    # apagado é o índice, não a fonte.
+    assert depois["pending_files"] == 1
+    assert depois["files"][0]["indexed"] is False
+
+
+def test_indice_ilegivel_ainda_pode_ser_limpo(client, monkeypatch):
+    """
+    O caso que motiva a limpeza: trocado o modelo de embedding, é justamente a
+    leitura do índice que falha. Não conseguir contar não pode impedir apagar.
+    """
+    caminho = _indice_falso(client)
+
+    def explode():
+        raise RuntimeError("dimensão do vetor não confere")
+
+    monkeypatch.setattr(client.documents.rag, "count_chunks", explode)
+
+    corpo = client.post("/api/admin/rag/reset", headers=_token(client)).json()
+    assert corpo["index_removed"] is True
+    assert corpo["chunks_removed"] is None
+    assert not (caminho / "index.faiss").exists()
+
+
+def test_limpeza_sem_indice_nao_e_erro(client):
+    corpo = client.post("/api/admin/rag/reset", headers=_token(client)).json()
+    assert corpo == {"index_removed": False, "documents_cleared": 0, "chunks_removed": 0}
+
+
+def test_limpeza_durante_a_ingestao_e_recusada(client, monkeypatch):
+    """Apagar o índice sob os pés de quem está escrevendo nele deixaria os dois inconsistentes."""
+    _documento(client)
+    headers = _token(client)
+    liberado = threading.Event()
+
+    def ingest_lento(paths, scope, session_id=None, source_type=None, guardrail_log=None):
+        liberado.wait(timeout=5)
+        return {
+            "chunks": 1,
+            "files_processed": 1,
+            "files_failed": 0,
+            "details": [],
+            "unassigned_files": [],
+            "documents": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(client.documents.rag, "ingest_paths", ingest_lento)
+    assert client.post("/api/admin/rag/ingest", headers=headers).status_code == 202
+
+    recusa = client.post("/api/admin/rag/reset", headers=headers)
+    assert recusa.status_code == 409
+
+    liberado.set()
+    _aguarda_conclusao(client, headers)
+
+
+# --- Divergência de modelo de embedding ------------------------------------
+
+
+def test_modelo_de_embedding_trocado_e_sinalizado_no_inventario(client, monkeypatch):
+    """
+    A falha que o inventário existe para tornar visível: o índice responde às
+    buscas com os vetores do modelo que o gerou, e trocar o modelo faz toda
+    consulta voltar vazia sem erro nenhum na tela.
+    """
+    import config
+
+    # O modelo em vigor na ingestão é fixado aqui: o registro do documento grava
+    # o que estiver configurado no momento, e o teste precisa saber qual foi.
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "huggingface")
+    monkeypatch.setenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    config.reload_settings()
+
+    _documento(client)
+    _duplo_de_ingestao(client, monkeypatch)
+    headers = _token(client)
+    client.post("/api/admin/rag/ingest", headers=headers)
+    _aguarda_conclusao(client, headers)
+
+    antes = client.get("/api/admin/rag/status", headers=headers).json()
+    assert antes["embedding_mismatch"] is False
+    assert antes["index_embedding_model"] == "all-MiniLM-L6-v2"
+
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+    config.reload_settings()
+
+    depois = client.get("/api/admin/rag/status", headers=headers).json()
+    assert depois["embedding_mismatch"] is True
+    assert depois["embedding_model"] == "text-embedding-ada-002"
+    # O modelo que gerou o índice continua sendo o que está no registro.
+    assert depois["index_embedding_model"] == "all-MiniLM-L6-v2"
+
+
+def test_sem_documento_registrado_nao_ha_divergencia(client):
+    """Índice vazio não tem modelo: alarme sem base seria ruído no painel."""
+    corpo = client.get("/api/admin/rag/status", headers=_token(client)).json()
+    assert corpo["embedding_mismatch"] is False
+    assert corpo["index_embedding_model"] is None
 
 
 def test_total_de_trechos_inclui_documento_sem_provedor(client, monkeypatch):

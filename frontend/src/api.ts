@@ -4,6 +4,7 @@ import type {
   IngestResult,
   QuestionsFile,
   RagJob,
+  RagResetResult,
   RagStatus,
   RecommendationResponse,
   RecommendPayload,
@@ -238,6 +239,17 @@ export function adminRagIngest(files?: string[]): Promise<RagJob> {
 /** Estado da ingestão em curso. Rota leve, própria para polling. */
 export function adminRagJob(): Promise<RagJob> {
   return adminFetch<RagJob>("/rag/ingest");
+}
+
+/**
+ * Apaga o índice vetorial e o registro dos documentos.
+ *
+ * Não há lixeira e não há como reaproveitar o que sai: a próxima base vem de
+ * uma ingestão nova. É a saída para o índice preso a um modelo de embedding que
+ * não está mais em uso — vetores de modelos diferentes não se comparam.
+ */
+export function adminRagReset(): Promise<RagResetResult> {
+  return adminFetch<RagResetResult>("/rag/reset", { method: "POST" });
 }
 
 /** Exclusão definitiva — não há lixeira no backend. */
