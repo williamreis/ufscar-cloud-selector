@@ -401,6 +401,25 @@ def test_desempenho_extraido_alimenta_o_ranking(monkeypatch, metodologia, dispon
     assert conjunto.excluded["performance_availability"] == "missing_for_some_providers"
 
 
+def test_trecho_do_relatorio_leva_os_termos_do_quadro_27_que_contem(
+    monkeypatch, metodologia, disponibilidade
+):
+    """
+    §4.4: a recuperação é "orientada pelos indicadores previamente definidos".
+    O trecho exibido no relatório carrega, por isso, os termos do Quadro 27 do
+    indicador que o trouxe e que estão de fato no texto — é o que permite ao
+    leitor conferir a ligação entre a citação e o indicador.
+    """
+    payload = {"findings": []}
+    extraction, _ = _rodar_extracao(monkeypatch, metodologia, [disponibilidade], payload)
+
+    trecho = extraction.evidences["aws"][0]
+    # O `_chunk` diz "Disponibilidade mensal de 99,99% conforme SLA."
+    assert trecho["matched_terms"] == ["disponibilidade", "SLA"]
+    # Termo do indicador que o trecho não traz não vira tag.
+    assert "uptime" not in trecho["matched_terms"]
+
+
 def test_ranking_completo_quando_todos_tem_evidencia(monkeypatch, metodologia, disponibilidade):
     class Cliente:
         """Cada provedor publica um valor diferente, lido do próprio prompt."""

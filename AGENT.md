@@ -429,6 +429,14 @@ Os mesmos termos acompanham o indicador dentro do prompt: a §5.2 os descreve co
 orientadores "na construção das consultas **e na recuperação das evidências
 documentais**", que são duas etapas, não uma.
 
+**Os termos voltam no trecho exibido.** Cada evidência do relatório traz
+`matched_terms`: os termos do Quadro 27 daquele indicador que aparecem no texto
+do trecho (`rag/terms.py`, comparação sem acento e sem caixa, tolerante à quebra
+de linha do PDF). É o que liga a citação ao indicador aos olhos de quem audita —
+antes disso, o leitor via o trecho e o rótulo do indicador sem nada entre os
+dois. Lista vazia é resposta legítima: a recuperação é por similaridade, não por
+casamento de palavra, e um trecho pertinente pode não repetir termo nenhum.
+
 **Refinamento pelo Bloco E (§4.5.1).** Os requisitos institucionais que o gestor
 descreve em texto livre passam por `PROMPT_QUERY_REFINEMENT_V1`, um prompt
 auxiliar que os associa aos indicadores já definidos e devolve termos de busca.
@@ -596,6 +604,7 @@ existindo, com o mesmo pipeline e a mesma senha.
 | `GET /api/admin/rag/status` | inventário: arquivos em `data/pdf`, documentos já ingeridos, estado do índice, trechos por provedor, mais o job em curso |
 | `POST /api/admin/rag/ingest` | **inicia** a ingestão e responde `202` na hora; com `{"files": [...]}`, só os arquivos indicados |
 | `GET /api/admin/rag/ingest` | estado do job (rota leve, própria para polling de poucos em poucos segundos) |
+| `POST /api/admin/rag/reset` | apaga o índice FAISS e o registro dos documentos; `409` durante uma ingestão |
 
 **A ingestão não é síncrona, e não pode ser.** Indexar a base inteira leva
 minutos; o nginx do frontend corta em 300s (`proxy_read_timeout` em
@@ -629,6 +638,23 @@ administrador:
   seleção por arquivo existe — reingerir só o pendente em vez do diretório todo.
 - **provedor sem trecho indexado fica fora do ranking** (a cobertura documental
   do `/api/recommend`), então os contadores por provedor incluem os zerados.
+- **o índice está preso ao modelo de embedding que o gerou.** Vetores de modelos
+  diferentes não são comparáveis — nem têm a mesma dimensão —, e o FAISS não
+  converte. Trocar `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL` (ou trocar
+  `LLM_PROVIDER`, que os define por omissão) invalida o índice existente sem
+  apagar nada: a busca simplesmente para de encontrar, e o relatório passa a
+  dizer que **nenhum provedor tem documento** com o índice cheio. O inventário
+  compara o modelo em vigor com o gravado em `documents.embedding_model` e
+  sinaliza a divergência (`embedding_mismatch`); `rag/retrieval.py` registra em
+  log a exceção que antes engolia em silêncio. As duas saídas são voltar à
+  configuração anterior ou limpar a base e reingerir.
+
+**A limpeza (`POST /api/admin/rag/reset`) apaga índice e registro juntos**, e não
+tem lixeira. Junto vão os vetores dos documentos anexados em sessão — o índice é
+um só, e escolher o que fica fingiria uma separação que ele não tem. Ficam os
+arquivos em disco e o rastro de auditoria: `retrieved_chunks` guarda nome do
+arquivo, página e score por conta própria (§27), então avaliação antiga continua
+auditável depois de a base ser reconstruída.
 
 A seleção por nome passa por `guardrails.resolve_within`: um nome vindo da
 requisição não alcança arquivo fora de `data/pdf`.

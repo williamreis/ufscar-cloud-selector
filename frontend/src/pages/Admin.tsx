@@ -18,6 +18,7 @@ import {
   adminLogin,
   adminRagIngest,
   adminRagJob,
+  adminRagReset,
   adminRagStatus,
   adminSessionValid,
   adminStats,
@@ -29,6 +30,7 @@ import Report from "../components/Report";
 import type {
   AdminStats,
   RagJob,
+  RagResetResult,
   RagStatus,
   SubmissionDetail,
   SubmissionListItem,
@@ -584,6 +586,8 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [job, setJob] = useState<RagJob | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetResult, setResetResult] = useState<RagResetResult | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -644,6 +648,7 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
   }
 
   const files = status?.files ?? [];
+  const hasIndexedBase = Boolean(status && (status.index_ready || status.documents_indexed > 0));
   const result = job?.result ?? null;
   const progress = job?.progress;
   const toggle = (name: string) =>
@@ -671,6 +676,18 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
             className="rounded-xl border border-slate-300 px-3.5 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
           >
             ⟳ Atualizar
+          </button>
+          <button
+            onClick={() => setConfirmingReset(true)}
+            disabled={loading || running || !hasIndexedBase}
+            title={
+              hasIndexedBase
+                ? "Apagar o índice vetorial e o registro dos documentos"
+                : "Não há índice nem documento registrado para limpar"
+            }
+            className="rounded-xl border border-red-300 px-3.5 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-50 disabled:hover:bg-transparent"
+          >
+            Limpar banco vetorial
           </button>
           <button
             onClick={() => ingest(selected.length ? selected : undefined)}
@@ -737,6 +754,46 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
           hint={status ? `sobreposição de ${status.chunk_overlap} caracteres` : undefined}
         />
       </div>
+
+      {status?.embedding_mismatch && (
+        <div
+          role="alert"
+          className="mb-4 rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-800"
+        >
+          <p className="font-semibold">
+            O índice foi gerado por outro modelo de embedding — nenhuma busca encontra nada.
+          </p>
+          <p className="mt-1">
+            Os {status.chunks_total} trechos indexados vieram de{" "}
+            <code className="rounded bg-red-100 px-1">
+              {status.index_embedding_model || "modelo(s) anterior(es)"}
+            </code>
+            {status.index_embedding_provider ? ` (${status.index_embedding_provider})` : ""}, e a
+            configuração em vigor é{" "}
+            <code className="rounded bg-red-100 px-1">{status.embedding_model}</code> (
+            {status.embedding_provider}). Vetores de modelos diferentes não são comparáveis, então
+            as buscas voltam vazias e o relatório mostra todos os provedores{" "}
+            <em>sem documentos indexados</em>. Ou se volta à configuração anterior em{" "}
+            <code className="rounded bg-red-100 px-1">EMBEDDING_PROVIDER</code>/
+            <code className="rounded bg-red-100 px-1">EMBEDDING_MODEL</code>, ou se limpa a base e
+            reingere tudo com o modelo novo.
+          </p>
+        </div>
+      )}
+
+      {resetResult && (
+        <div
+          role="status"
+          className="mb-4 rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-700"
+        >
+          Base vetorial limpa: {resetResult.index_removed ? "índice removido" : "não havia índice"}
+          {resetResult.chunks_removed !== null
+            ? ` (${resetResult.chunks_removed} trecho(s))`
+            : ""}{" "}
+          e {resetResult.documents_cleared} documento(s) desregistrado(s). Execute a ingestão para
+          reconstruir a base.
+        </div>
+      )}
 
       {status && !status.index_ready && (
         <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -927,7 +984,118 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
           )}
         </div>
       )}
+
+      {confirmingReset && status && (
+        <ResetIndexDialog
+          status={status}
+          onCancel={() => setConfirmingReset(false)}
+          onDone={(outcome) => {
+            setConfirmingReset(false);
+            setResetResult(outcome);
+            setSelected([]);
+            load();
+          }}
+          onError={(err) => {
+            setConfirmingReset(false);
+            onError(err);
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Confirmação da limpeza da base vetorial.
+ *
+ * Diz o número antes de apagar — quantos trechos e quantos documentos saem — e
+ * o que **não** sai: os PDF em disco e o rastro das avaliações já gravadas. O
+ * dialogo é o mesmo padrão da exclusão de envio, e pela mesma razão: uma ação
+ * sem lixeira não pode acontecer a um clique de distância.
+ */
+function ResetIndexDialog({
+  status,
+  onCancel,
+  onDone,
+  onError,
+}: {
+  status: RagStatus;
+  onCancel: () => void;
+  onDone: (outcome: RagResetResult) => void;
+  onError: (err: unknown) => void;
+}) {
+  const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  async function confirm() {
+    setClearing(true);
+    try {
+      onDone(await adminRagReset());
+    } catch (err) {
+      onError(err);
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm"
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Confirmar limpeza da base vetorial"
+    >
+      <div
+        className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="mb-2 font-bold text-slate-900">Limpar a base vetorial?</h3>
+        <p className="mb-4 text-sm leading-relaxed text-slate-600">
+          Saem o índice FAISS e o registro dos documentos, <strong>sem lixeira</strong>. Enquanto
+          não houver nova ingestão, nenhuma busca de evidência encontra nada e nenhum provedor
+          entra no ranking. Os vetores dos documentos anexados em sessão também saem — o índice é
+          um só.
+        </p>
+        <div className="mb-4 rounded-xl bg-slate-50 p-3 text-sm ring-1 ring-slate-200">
+          <p className="text-slate-700">
+            <strong>{status.chunks_total}</strong> trecho(s) indexado(s) ·{" "}
+            <strong>{status.documents_indexed}</strong> documento(s) registrado(s)
+          </p>
+          <p className="mt-1 text-slate-500">
+            Gerados por {status.index_embedding_model || "modelo não registrado"}
+          </p>
+        </div>
+        <p className="mb-5 text-sm leading-relaxed text-slate-600">
+          Permanecem: os arquivos em <code className="rounded bg-slate-100 px-1">data/pdf</code> e
+          o rastro de auditoria das avaliações já gravadas. Depois de limpar, execute a ingestão
+          para reconstruir a base com o modelo em vigor.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={clearing}
+            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={confirm}
+            disabled={clearing}
+            className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-60"
+          >
+            {clearing ? "Limpando…" : "Limpar definitivamente"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

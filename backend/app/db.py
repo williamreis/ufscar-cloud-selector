@@ -51,6 +51,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    delete,
     event,
     func,
     inspect,
@@ -698,6 +699,23 @@ def save_documents(details: List[Dict[str, Any]]) -> int:
             saved += 1
 
     return saved
+
+
+def clear_documents(scope: Optional[str] = None) -> int:
+    """
+    Apaga o registro dos documentos ingeridos. Devolve quantas linhas saíram.
+
+    Acompanha `rag.delete_index`: o registro descreve o que está no índice, e
+    sobreviver a ele só produziria um inventário que mente. O rastro das
+    avaliações **não** é tocado — `retrieved_chunks` guarda nome do arquivo,
+    página e score por conta própria (§27), então uma avaliação antiga continua
+    auditável depois de a base ser reconstruída.
+    """
+    with session_scope() as session:
+        consulta = delete(Document)
+        if scope is not None:
+            consulta = consulta.where(Document.scope == scope)
+        return int(session.execute(consulta).rowcount or 0)
 
 
 def list_documents() -> List[Dict[str, Any]]:

@@ -12,11 +12,14 @@ AWS se não houver documento da Oracle indexado. Sem o filtro, o relatório cita
 o documento de um provedor como evidência de outro.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
 from config import get_settings
 from rag import index as index_module
 from rag.metadata import SCOPE_GLOBAL
+
+logger = logging.getLogger("uvicorn.error")
 
 # fetch_k alto: o filtro é aplicado após a busca dos vizinhos mais próximos, então
 # provedores com poucos documentos precisam de um pool maior de candidatos.
@@ -94,9 +97,21 @@ def search(
             hits = index.similarity_search_with_score(
                 query, k=top_k, filter=scope_filter, fetch_k=FETCH_K
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - um escopo ruim não derruba a consulta
             # Um escopo sem nenhum documento correspondente não é erro: segue
             # para o próximo em vez de derrubar a consulta inteira.
+            #
+            # Mas o `continue` mudo escondia o caso grave: com o modelo de
+            # embedding trocado, a dimensão do vetor da consulta não bate com a
+            # do índice, **toda** busca cai aqui e o produto responde "nenhum
+            # provedor tem documento" com o índice cheio. O log é o que separa
+            # "não há nada neste escopo" de "o índice não responde mais".
+            logger.warning(
+                "Busca sem resultado no escopo %s: %s: %s",
+                scope_filter,
+                type(exc).__name__,
+                exc,
+            )
             continue
         results.extend(format_hit(doc, score) for doc, score in hits)
 

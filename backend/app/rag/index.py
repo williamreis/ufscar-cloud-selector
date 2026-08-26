@@ -62,6 +62,26 @@ def save(index: Any) -> None:
     invalidate_cache()
 
 
+def delete(path: Optional[str] = None) -> bool:
+    """
+    Apaga o índice persistido do disco. Devolve se havia algo para apagar.
+
+    Só os dois arquivos que `save_local` escreve: o diretório permanece (é ponto
+    de montagem em container) e nada mais dentro dele é tocado. O registro dos
+    documentos no banco é outra coisa e sai por `db.clear_documents` — quem
+    apaga um sem o outro fica com um painel que discorda de si mesmo.
+    """
+    directory = Path(path or index_path())
+    removidos = False
+    for nome in ("index.faiss", "index.pkl"):
+        arquivo = directory / nome
+        if arquivo.is_file():
+            arquivo.unlink()
+            removidos = True
+    invalidate_cache()
+    return removidos
+
+
 def count_chunks() -> int:
     """
     Total de trechos no índice, **inclusive os sem provedor atribuído**.
@@ -96,6 +116,7 @@ def count_chunks_by_provider() -> Dict[str, int]:
 __all__ = [
     "count_chunks",
     "count_chunks_by_provider",
+    "delete",
     "index_path",
     "invalidate_cache",
     "is_ready",
