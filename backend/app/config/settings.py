@@ -53,7 +53,17 @@ DEFAULT_EMBEDDING_MODELS: Dict[str, str] = {
 _LEGACY_MODEL_VARS: Dict[str, Tuple[str, str]] = {
     "openai": ("OPENAI_MODEL", "gpt-4o-mini"),
     "groq": ("GROQ_MODEL", "openai/gpt-oss-120b"),
-    "openrouter": ("OPENROUTER_MODEL", "meta-llama/llama-4-maverick:free"),
+    # O `meta-llama/llama-4-maverick:free` saiu do catálogo gratuito (a API
+    # responde 404 pedindo a versão paga). O nemotron abaixo foi verificado
+    # contra o prompt de extração real: devolve JSON válido em ~8s e aguenta as
+    # chamadas seguidas de uma avaliação inteira.
+    #
+    # O sufixo `:free` é deliberado no *default* — um valor que ninguém escolheu
+    # não pode começar a gastar crédito — e tem um preço que precisa estar dito:
+    # chamadas `:free` não consomem saldo e por isso saldo não as libera, elas
+    # caem num teto de requisições por dia da conta inteira. Quem tem crédito e
+    # quer usá-lo tira o `:free` em `OPENROUTER_MODEL`.
+    "openrouter": ("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"),
     "gemini": ("GEMINI_MODEL", "gemini-2.5-flash"),
     "ollama": ("OLLAMA_MODEL", "llama3.1"),
 }
@@ -166,6 +176,17 @@ class Settings:
     # aí sim vira LLM_UNAVAILABLE, sem virar pontuação presumida.
     llm_rate_limit_retries: int
     llm_rate_limit_max_wait_s: float
+    # Teto de uma única chamada, em segundos. Sem ele o SDK do provedor pode
+    # segurar a requisição indefinidamente e a tela do gestor fica girando.
+    llm_timeout_s: float
+    # Teto de quanto tempo um provedor fica de fora depois de recusar por cota.
+    #
+    # É outro orçamento, e não o mesmo de `llm_rate_limit_max_wait_s`: aquele
+    # limita quanto uma requisição pode ficar **parada esperando**, e por isso é
+    # curto. Este limita por quanto tempo o provedor é **pulado**, o que não custa
+    # espera nenhuma. Confundir os dois truncava a janela de cota diária do Groq
+    # (21 minutos) em 60 segundos, e as chamadas voltavam a bater na recusa.
+    llm_cooldown_max_s: float
     # Chamadas simultâneas à LLM na extração de evidências. Em camada gratuita
     # com teto de tokens por minuto, 1 é o valor que não desperdiça espera.
     llm_concurrency: int
@@ -213,6 +234,11 @@ class Settings:
 
     # -- Persistência -------------------------------------------------------
     audit_db_path: Path
+    # Onde as janelas de cota dos provedores sobrevivem a um reinício. Fica ao
+    # lado do banco de auditoria porque é o volume que já é persistente; não é
+    # dado de auditoria e por isso não entra no banco. Cache puro: apagar o
+    # arquivo só faz a próxima leva sondar de novo.
+    llm_cooldown_state_path: Path
 
     # -- Pontos em aberto na dissertação, configuráveis por decisão (§45) ---
     # TODO ACADÊMICO 04: limiar de atualidade documental. Sem valor definido o
@@ -318,6 +344,8 @@ def _build_settings() -> Settings:
             return Path(explicit).expanduser()
         return _BACKEND_ROOT / "methodology" / filename
 
+    audit_db_path = Path(_env("AUDIT_DB_PATH", "../data/audit.db")).resolve()
+
     indicators_path = _methodology_path("INDICATORS_PATH", "indicators.json")
     methodology_scales_path = _methodology_path("METHODOLOGY_SCALES_PATH", "scales.json")
 
@@ -326,10 +354,20 @@ def _build_settings() -> Settings:
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         llm_temperature=float(_env("LLM_TEMPERATURE", "0.2")),
-        llm_max_tokens=_env_int("LLM_MAX_TOKENS", 1500),
+        # 1500 truncava a extração: uma dimensão devolve um `finding` por
+        # indicador (5, no questionário atual) com resumo em texto, e os modelos
+        # de raciocínio ainda gastam parte do teto pensando antes de escrever o
+        # JSON. Resposta cortada não fecha o objeto e a dimensão inteira se perde.
+        llm_max_tokens=_env_int("LLM_MAX_TOKENS", 4000),
         ollama_base_url=_env("OLLAMA_BASE_URL", "http://localhost:11434"),
         llm_rate_limit_retries=_env_int("LLM_RATE_LIMIT_RETRIES", 4),
         llm_rate_limit_max_wait_s=_env_float("LLM_RATE_LIMIT_MAX_WAIT_S", 60.0),
+        llm_timeout_s=_env_float("LLM_TIMEOUT_S", 60.0),
+        # 30 minutos cobre a janela de cota diária das camadas gratuitas. Acima
+        # disso vale re-testar de vez em quando: uma chamada perdida a cada meia
+        # hora é barato, e aceitar qualquer prazo declarado deixaria o provedor
+        # de fora por horas com base num número que não controlamos.
+        llm_cooldown_max_s=_env_float("LLM_COOLDOWN_MAX_S", 1800.0),
         llm_concurrency=max(1, _env_int("LLM_CONCURRENCY", 3)),
         llm_fallbacks=tuple(fallbacks),
         embedding_provider=embedding_provider,
@@ -350,7 +388,8 @@ def _build_settings() -> Settings:
         questions_json_path=questions_json_path,
         indicators_path=indicators_path,
         methodology_scales_path=methodology_scales_path,
-        audit_db_path=Path(_env("AUDIT_DB_PATH", "../data/audit.db")).resolve(),
+        audit_db_path=audit_db_path,
+        llm_cooldown_state_path=audit_db_path.parent / "llm_cooldown.json",
         evidence_stale_months=_env_optional_int("EVIDENCE_STALE_MONTHS"),
         sensitivity_deltas=_env_floats("SENSITIVITY_DELTAS", "-0.10,-0.05,0.05,0.10"),
     )

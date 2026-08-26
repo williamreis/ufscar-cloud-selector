@@ -721,6 +721,15 @@ async def extract_performances(
                         "criterion": indicator.dimension,
                         "indicator_id": indicator.id,
                         "indicator_name": nomes.get(indicator.id, indicator.id),
+                        # Os termos do Quadro 27 que estão de fato no trecho.
+                        # É o que liga a citação ao indicador aos olhos de quem
+                        # lê o relatório: a consulta foi montada com estes
+                        # termos (§4.4), e aqui se vê quais deles o documento
+                        # traz. Lista vazia é resposta legítima — o trecho veio
+                        # por similaridade, não por casamento de palavra.
+                        "matched_terms": rag.terms_found(
+                            chunk.get("page_content") or "", indicator.search_terms
+                        ),
                     }
                 )
         resultado.evidences[provider["id"]] = itens
