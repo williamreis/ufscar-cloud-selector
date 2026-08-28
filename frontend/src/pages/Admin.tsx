@@ -52,8 +52,6 @@ const PROVIDER_COLORS: Record<string, string> = {
   aws: "#2a78d6",
   gcp: "#eb6834",
   azure: "#1baf7a",
-  oracle: "#eda100",
-  ibm: "#e87ba4",
 };
 
 const PAGE_SIZE = 20;
@@ -658,49 +656,48 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
 
   return (
     <section id="base-documental" className="mt-10">
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-        <div>
+      <div className="mb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-bold text-slate-900">Base documental (RAG)</h2>
-          <p className="mt-1 max-w-3xl text-sm text-slate-500">
-            Documentos oficiais em <code className="rounded bg-slate-100 px-1">data/pdf</code>,
-            indexados com escopo global e consultados em <strong>todas</strong> as buscas de
-            evidência. Reingerir um arquivo já indexado <strong>acrescenta os trechos dele ao
-            índice outra vez</strong> — o registro no banco é atualizado (o id do documento é o
-            hash do conteúdo), mas os vetores duplicam. Prefira marcar só os pendentes.
-          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => load()}
+              disabled={loading || running}
+              className="rounded-xl border border-slate-300 px-3.5 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              ⟳ Atualizar
+            </button>
+            <button
+              onClick={() => setConfirmingReset(true)}
+              disabled={loading || running || !hasIndexedBase}
+              title={
+                hasIndexedBase
+                  ? "Apagar o índice vetorial e o registro dos documentos"
+                  : "Não há índice nem documento registrado para limpar"
+              }
+              className="rounded-xl border border-red-300 px-3.5 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-50 disabled:hover:bg-transparent"
+            >
+              Limpar banco vetorial
+            </button>
+            <button
+              onClick={() => ingest(selected.length ? selected : undefined)}
+              disabled={running || loading || files.length === 0}
+              className="rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {running
+                ? "Indexando…"
+                : selected.length
+                  ? `Executar ingestão (${selected.length} selecionado${selected.length > 1 ? "s" : ""})`
+                  : "Executar ingestão de todos"}
+            </button>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => load()}
-            disabled={loading || running}
-            className="rounded-xl border border-slate-300 px-3.5 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
-          >
-            ⟳ Atualizar
-          </button>
-          <button
-            onClick={() => setConfirmingReset(true)}
-            disabled={loading || running || !hasIndexedBase}
-            title={
-              hasIndexedBase
-                ? "Apagar o índice vetorial e o registro dos documentos"
-                : "Não há índice nem documento registrado para limpar"
-            }
-            className="rounded-xl border border-red-300 px-3.5 py-2 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-50 disabled:hover:bg-transparent"
-          >
-            Limpar banco vetorial
-          </button>
-          <button
-            onClick={() => ingest(selected.length ? selected : undefined)}
-            disabled={running || loading || files.length === 0}
-            className="rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {running
-              ? "Indexando…"
-              : selected.length
-                ? `Executar ingestão (${selected.length} selecionado${selected.length > 1 ? "s" : ""})`
-                : "Executar ingestão de todos"}
-          </button>
-        </div>
+        <p className="mt-2 max-w-3xl text-sm text-slate-500">
+          Documentos oficiais em <code className="rounded bg-slate-100 px-1">data/pdf</code>,
+          indexados com escopo global e consultados em <strong>todas</strong> as buscas de
+          evidência. Reingerir um arquivo já indexado{" "}
+          <strong>duplica os trechos dele no índice</strong> — marque apenas os pendentes.
+        </p>
       </div>
 
       {running && progress && (
