@@ -240,13 +240,19 @@ export default function Report({
         {/*
           O número é a pontuação da Equação 5 — Σ (peso efetivo × desempenho
           normalizado) —, per-provedor e em [0,1]. Não é a prioridade do
-          autovetor e não soma 1 entre os provedores: cada um é medido contra o
-          melhor valor de cada indicador, então vários podem chegar a 1,000.
+          autovetor e não soma 1 entre os provedores.
+
+          A régua tem duas metades, porque a normalização é por tipo de
+          indicador: nos quantitativos o desempenho é medido contra o melhor
+          valor observado; nos de rubrica é o próprio nível do Quadro 23. Logo
+          1,000 exige o melhor valor em todos os quantitativos **e** `completo`
+          em todos os qualitativos — e uma avaliação em que todos ficaram em
+          `alto` fecha perto de 0,75, que é o que ela de fato constatou.
         */}
         <MetricCard
           label="Pontuação final"
           value={top.score.toFixed(3)}
-          hint="Σ (peso do indicador × desempenho normalizado) · 1,000 = melhor em todos os indicadores comparáveis"
+          hint="Σ (peso do indicador × desempenho). 1,000 exige o melhor valor em todos os indicadores quantitativos e o nível máximo da rubrica em todos os qualitativos."
         />
         <MetricCard
           label={
