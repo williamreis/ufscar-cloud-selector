@@ -18,8 +18,10 @@ export default function NavBar() {
             ☁️
           </span>
           <span className="hidden sm:block leading-tight">
-            <span className="block text-sm font-bold text-slate-900">Cloud Selector</span>
-            <span className="block text-[10px] uppercase tracking-wider text-slate-400">UFSCar</span>
+            <span className="block text-sm font-bold text-slate-900">Plataforma de Apoio à Decisão</span>
+            <span className="block text-[10px] uppercase tracking-wider text-slate-400">
+              Provedores de Cloud
+            </span>
           </span>
         </NavLink>
 

@@ -6,27 +6,84 @@ const CRITERIA = [
     icon: "🌱",
     title: "Sustentabilidade",
     accent: "#1baf7a",
-    text: "Eficiência energética dos data centers, uso de energia renovável e metas de redução de emissões de carbono.",
+    count: "5 indicadores",
+    text: "Eficiência energética dos data centers (PUE), uso de fontes renováveis, redução de emissões, gestão de resíduos eletrônicos e circularidade dos equipamentos.",
   },
   {
     icon: "⚡",
-    title: "Desempenho",
+    title: "Desempenho Operacional",
     accent: "#2a78d6",
-    text: "Disponibilidade (uptime), latência, escalabilidade e qualidade do suporte técnico oferecido.",
+    count: "4 indicadores",
+    text: "Disponibilidade dos serviços, latência e tempo de resposta, escalabilidade e elasticidade, suporte técnico e resposta a incidentes.",
   },
   {
     icon: "🔒",
-    title: "Segurança",
+    title: "Segurança da Informação",
     accent: "#4a3aa7",
-    text: "Certificações (ISO 27001, SOC 2, GDPR), backup, recuperação de desastres e conformidade regulatória.",
+    count: "4 indicadores",
+    text: "Certificações e conformidade, backup e continuidade de negócio, identidade e controle de acesso, proteção de dados e criptografia.",
   },
 ];
 
+const ROLES = [
+  {
+    label: "Pesos das dimensões",
+    text: "Comparações par a par informadas pelo gestor",
+    kind: "Determinístico",
+  },
+  {
+    label: "Pesos dos indicadores",
+    text: "Respostas de relevância, por regra fixa",
+    kind: "Determinístico",
+  },
+  {
+    label: "Evidências",
+    text: "Recuperação nos documentos dos provedores",
+    kind: "Recuperação",
+  },
+  {
+    label: "Leitura das evidências",
+    text: "Modelo de linguagem extrai valor ou nível de atendimento",
+    kind: "Probabilístico",
+  },
+  {
+    label: "Notas, ponderação e ranking",
+    text: "Normalização e soma ponderada em código",
+    kind: "Determinístico",
+  },
+];
+
+const KIND_STYLE: Record<string, string> = {
+  "Determinístico": "bg-blue-50 text-blue-700 ring-blue-100",
+  "Recuperação": "bg-amber-50 text-amber-700 ring-amber-100",
+  "Probabilístico": "bg-violet-50 text-violet-700 ring-violet-100",
+};
+
 const STEPS = [
-  { num: 1, icon: "📋", title: "Questionário", text: "Responda perguntas objetivas e dissertativas sobre suas prioridades." },
-  { num: 2, icon: "⚖️", title: "IA + AHP", text: "A IA extrai pesos das respostas e o AHP calcula o ranking dos provedores." },
-  { num: 3, icon: "📚", title: "RAG", text: "O sistema busca evidências reais nos relatórios oficiais de cada provedor." },
-  { num: 4, icon: "📊", title: "Relatório", text: "Veja o ranking, os gráficos comparativos e as evidências da recomendação." },
+  {
+    num: 1,
+    icon: "📋",
+    title: "Questionário",
+    text: "25 perguntas em cinco blocos: relevância dos indicadores, comparações par a par e requisitos institucionais.",
+  },
+  {
+    num: 2,
+    icon: "⚖️",
+    title: "Pesos (AHP)",
+    text: "Seus julgamentos viram os pesos das dimensões, com verificação da razão de consistência antes de prosseguir.",
+  },
+  {
+    num: 3,
+    icon: "📚",
+    title: "Evidências (RAG)",
+    text: "Para cada provedor e indicador, o sistema recupera trechos dos documentos oficiais e extrai o dado publicado.",
+  },
+  {
+    num: 4,
+    icon: "📊",
+    title: "Ranking e relatório",
+    text: "Normalização, soma ponderada e ordenação em código determinístico, com memória de cálculo e fontes citadas.",
+  },
 ];
 
 export default function Home() {
@@ -39,7 +96,7 @@ export default function Home() {
       <section className="text-center px-4 pt-6 pb-8">
         <span className="mb-5 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-3.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm backdrop-blur">
           <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-          Apoio à decisão baseado em evidências
+          Apoio à decisão com evidência documental rastreável
         </span>
 
         <h1 className="mx-auto max-w-3xl text-4xl sm:text-5xl font-extrabold leading-[1.1] tracking-tight text-slate-900">
@@ -51,11 +108,14 @@ export default function Home() {
         </h1>
 
         <p className="mx-auto mt-5 max-w-2xl text-base sm:text-lg leading-relaxed text-slate-600">
-          Uma ferramenta de apoio à decisão para gestores de TI da UFSCar, combinando{" "}
-          <strong className="text-slate-800">AHP</strong> (método de decisão multicritério),{" "}
-          <strong className="text-slate-800">Inteligência Artificial</strong> e{" "}
-          <strong className="text-slate-800">evidências reais</strong> extraídas de relatórios
-          oficiais de sustentabilidade, desempenho e segurança dos provedores.
+          Ferramenta de apoio à decisão para gestores de TI. O{" "}
+          <strong className="text-slate-800">AHP</strong> transforma os seus julgamentos em pesos
+          para <strong className="text-slate-800">sustentabilidade</strong>,{" "}
+          <strong className="text-slate-800">desempenho operacional</strong> e{" "}
+          <strong className="text-slate-800">segurança da informação</strong>; o desempenho de cada
+          provedor vem de <strong className="text-slate-800">evidências</strong> extraídas dos
+          documentos oficiais, com arquivo e página citados. A recomendação é rastreável — a decisão
+          continua sendo sua.
         </p>
 
         <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
@@ -72,11 +132,11 @@ export default function Home() {
             onClick={() => navigate("/ingest")}
             className="rounded-2xl border border-slate-300 bg-white/70 px-6 py-4 text-base font-medium text-slate-700 shadow-sm backdrop-blur transition hover:bg-white"
           >
-            Anexar meus documentos
+            Anexar documentos (opcional)
           </button>
         </div>
         <p className="mt-3 text-xs text-slate-400">
-          Leva cerca de 5 minutos · Nenhum cadastro necessário
+          25 perguntas em cinco blocos · Nenhum cadastro necessário
         </p>
       </section>
 
@@ -91,11 +151,19 @@ export default function Home() {
               style={{ backgroundColor: c.accent }}
               aria-hidden
             />
-            <div
-              className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl text-xl"
-              style={{ backgroundColor: `${c.accent}15` }}
-            >
-              {c.icon}
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <span
+                className="flex h-11 w-11 items-center justify-center rounded-xl text-xl"
+                style={{ backgroundColor: `${c.accent}15` }}
+              >
+                {c.icon}
+              </span>
+              <span
+                className="rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider"
+                style={{ backgroundColor: `${c.accent}12`, color: c.accent }}
+              >
+                {c.count}
+              </span>
             </div>
             <h3 className="mb-1.5 font-bold text-slate-900">{c.title}</h3>
             <p className="text-sm leading-relaxed text-slate-500">{c.text}</p>
@@ -103,35 +171,72 @@ export default function Home() {
         ))}
       </section>
 
-      <section className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white p-8 sm:p-10 my-10 shadow-sm">
+      <section className="relative overflow-hidden rounded-3xl border border-slate-200/80 bg-white my-10 shadow-sm">
         <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full bg-blue-500/5 blur-3xl" aria-hidden />
-        <div className="relative max-w-3xl">
-          <span className="text-xs font-semibold uppercase tracking-wider text-blue-600">
-            Metodologia
-          </span>
-          <h2 className="mt-2 mb-4 text-2xl font-bold text-slate-900">
-            Como funciona o método AHP?
-          </h2>
-          <p className="mb-4 leading-relaxed text-slate-600">
-            O <strong className="text-slate-800">Analytic Hierarchy Process (AHP)</strong> é um
-            método de decisão multicritério que estrutura um problema complexo — como escolher entre
-            AWS, Azure, Google Cloud e outros — em uma hierarquia de critérios (Sustentabilidade,
-            Desempenho e Segurança) e alternativas (os provedores). Cada critério recebe um{" "}
-            <strong className="text-slate-800">peso</strong> de acordo com sua importância relativa
-            para o gestor, e cada provedor recebe uma <strong className="text-slate-800">nota</strong>{" "}
-            em cada critério. O resultado final é um{" "}
-            <strong className="text-slate-800">ranking ponderado</strong>, transparente e
-            rastreável, em vez de uma escolha subjetiva.
-          </p>
-          <p className="leading-relaxed text-slate-600">
-            Nesta ferramenta, os pesos são calculados a partir das suas respostas: as perguntas
-            fechadas geram escores numéricos e as respostas dissertativas são interpretadas por um
-            modelo de <strong className="text-slate-800">IA generativa</strong>, que ajusta os pesos
-            e justifica as prioridades identificadas. Em seguida, um sistema de{" "}
-            <strong className="text-slate-800">RAG (Retrieval-Augmented Generation)</strong> busca
-            trechos reais dos relatórios oficiais — com arquivo e página citados — para sustentar a
-            recomendação com evidências verificáveis.
-          </p>
+        <div className="relative grid lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+          <div className="p-8 sm:p-10">
+            <span className="text-xs font-semibold uppercase tracking-wider text-blue-600">
+              Metodologia
+            </span>
+            <h2 className="mt-2 mb-5 text-2xl font-bold text-slate-900">
+              Como a recomendação é construída
+            </h2>
+
+            <p className="mb-4 leading-relaxed text-slate-600">
+              O <strong className="text-slate-800">Analytic Hierarchy Process (AHP)</strong>{" "}
+              organiza a escolha entre provedores como AWS, Google Cloud e Microsoft Azure em uma
+              hierarquia de dimensões (Sustentabilidade, Desempenho Operacional e Segurança da
+              Informação), indicadores e alternativas. Nas comparações par a par você informa qual
+              dimensão prioriza e com que intensidade; daí saem os{" "}
+              <strong className="text-slate-800">pesos das dimensões</strong> e a{" "}
+              <strong className="text-slate-800">razão de consistência</strong> dos seus julgamentos
+              — acima do limite aceitável a avaliação não segue, e o sistema aponta o que revisar.
+            </p>
+
+            <p className="mb-4 leading-relaxed text-slate-600">
+              As perguntas de relevância definem o peso de cada indicador dentro da sua dimensão, e o
+              peso global é o produto dos dois níveis. As{" "}
+              <strong className="text-slate-800">
+                respostas dissertativas não alteram peso algum
+              </strong>
+              : direcionam a busca documental e a justificativa.
+            </p>
+
+            <p className="leading-relaxed text-slate-600">
+              O desempenho não é opinião da ferramenta. Para cada par provedor × indicador, o{" "}
+              <strong className="text-slate-800">RAG</strong> recupera trechos dos relatórios
+              oficiais e um modelo de linguagem extrai o valor publicado ou o nível de atendimento,
+              com arquivo e página citados. Nota, ponderação e ordenação ficam em{" "}
+              <strong className="text-slate-800">código determinístico e auditável</strong> — o
+              modelo não atribui pontuação, peso nem posição.
+            </p>
+
+            <p className="mt-5 rounded-2xl border border-slate-200/80 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-600">
+              Indicador sem evidência comparável em todos os provedores sai daquela execução, para
+              todas as alternativas. Ausência de evidência nunca vira nota zero.
+            </p>
+          </div>
+
+          <aside className="border-t border-slate-200/80 bg-slate-50/70 p-8 sm:p-10 lg:border-l lg:border-t-0">
+            <h3 className="mb-5 text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Quem decide o quê
+            </h3>
+            <ul className="space-y-4">
+              {ROLES.map((r) => (
+                <li key={r.label} className="border-l-2 border-slate-200 pl-3.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-800">{r.label}</span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ring-1 ${KIND_STYLE[r.kind]}`}
+                    >
+                      {r.kind}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-sm leading-snug text-slate-500">{r.text}</p>
+                </li>
+              ))}
+            </ul>
+          </aside>
         </div>
       </section>
 
@@ -164,8 +269,9 @@ export default function Home() {
       <section className="my-10 flex flex-col items-center gap-4 rounded-3xl bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-900 px-8 py-12 text-center text-white shadow-xl">
         <h2 className="text-2xl font-bold">Pronto para começar?</h2>
         <p className="max-w-lg text-sm text-slate-300">
-          Responda ao questionário e receba um relatório com ranking, gráficos comparativos e
-          evidências extraídas dos relatórios oficiais dos provedores.
+          Responda ao questionário e receba um relatório com o ranking, os pesos de cada dimensão e
+          indicador, a memória de cálculo e as evidências documentais que sustentam cada nota — com
+          arquivo e página de origem.
         </p>
         <button
           onClick={() => navigate("/questionnaire")}

@@ -35,6 +35,4 @@ PROVIDERS = [
     {"id": "aws", "name": "AWS", "doc_keywords": ["aws", "amazon"]},
     {"id": "gcp", "name": "Google Cloud", "doc_keywords": ["gcp", "google"]},
     {"id": "azure", "name": "Microsoft Azure", "doc_keywords": ["azure", "microsoft"]},
-    {"id": "oracle", "name": "Oracle Cloud", "doc_keywords": ["oracle", "oci"]},
-    {"id": "ibm", "name": "IBM Cloud", "doc_keywords": ["ibm"]},
 ]

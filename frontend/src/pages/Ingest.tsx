@@ -48,11 +48,12 @@ export default function Ingest() {
         <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-blue-500/20 blur-3xl" />
         <div className="relative">
           <h1 className="text-2xl font-bold mb-2">📁 Anexar documentos extras</h1>
-          <p className="text-slate-300 text-sm max-w-2xl">
+          <p className="text-slate-300 text-sm max-w-3xl">
             Envie, se desejar, arquivos de um provedor de Cloud Computing ou de sua infraestrutura
             local (on-premises) para consulta. Os documentos devem conter informações sobre
             Sustentabilidade, Desempenho e Segurança, sendo enviados separadamente por provedor, com
-            identificação clara. O envio não é obrigatório.
+            identificação clara. O envio não é obrigatório. Os arquivos ficam restritos a esta
+            sessão de avaliação e não são incorporados à base documental geral.
           </p>
         </div>
       </div>

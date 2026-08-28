@@ -7,8 +7,8 @@ mais.
 
 O filtro por provedor é essencial e continua valendo: a similaridade vetorial é
 dominada pelos termos temáticos (energia, data center, segurança), então uma
-busca por "Oracle Cloud: eficiência energética" retorna alegremente trechos da
-AWS se não houver documento da Oracle indexado. Sem o filtro, o relatório citaria
+busca por "Microsoft Azure: eficiência energética" retorna alegremente trechos da
+AWS se não houver documento da Azure indexado. Sem o filtro, o relatório citaria
 o documento de um provedor como evidência de outro.
 """
 

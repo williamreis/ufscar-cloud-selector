@@ -241,6 +241,47 @@ export interface WorstPair {
   log_deviation: number;
 }
 
+/** Uma alteração proposta para uma comparação do bloco D. */
+export interface SuggestedChange {
+  pair: string;
+  question_id: string | null;
+  left: string;
+  right: string;
+  from: { preference: string | null; intensity: string | null; description: string };
+  to: { preference: string | null; intensity: string | null; description: string };
+  steps: number;
+  /**
+   * "intensity" mantém a dimensão priorizada e só muda a força; "preference" cria
+   * ou abandona uma preferência; "inversion" troca quem vence — o único que
+   * contraria o que o gestor declarou, e por isso vem rotulado na tela.
+   */
+  kind: "intensity" | "preference" | "inversion" | "unchanged";
+}
+
+/** Uma revisão completa que traria o CR para dentro do limite. */
+export interface RevisionOption {
+  consistency_ratio: number;
+  changed_comparisons: number;
+  inverts_preference: boolean;
+  changes: SuggestedChange[];
+}
+
+/**
+ * Caminhos de revisão devolvidos com o 409.
+ *
+ * São propostas, não correções: o backend não altera nada do que foi enviado.
+ * A lista traz uma opção por comparação justamente para que quem escolhe de qual
+ * julgamento abrir mão seja o gestor, e não o sistema.
+ */
+export interface ConsistencySuggestion {
+  /**
+   * Preenchido quando as preferências formam um ciclo (A > B > C > A). Aí não é
+   * questão de calibrar intensidade: nenhuma ordem de prioridade satisfaz as três.
+   */
+  cycle: { dimensions: string[]; statements: string[] } | null;
+  options: RevisionOption[];
+}
+
 /** Corpo do 409 quando as comparações do bloco D se contradizem (§4.2.3) */
 export interface InconsistencyDetail {
   error: "AHP_INCONSISTENT_JUDGMENTS";
@@ -253,6 +294,7 @@ export interface InconsistencyDetail {
   question_ids: string[];
   judgments: Record<string, { choice: string | null; question_id: string | null }>;
   worst_pair: WorstPair | null;
+  suggestion: ConsistencySuggestion | null;
 }
 
 export interface RecommendPayload {
