@@ -269,7 +269,7 @@ def test_provedor_sem_documento_vira_limitacao_declarada(client):
     corpo = client.post("/api/recommend", json=_envio()).json()
 
     excluidos = corpo["coverage"]["excluded_no_documents"]
-    assert {p["id"] for p in excluidos} == {"azure", "oracle", "ibm"}
+    assert {p["id"] for p in excluidos} == {"azure"}
     assert corpo["status"] == "COMPLETED_WITH_LIMITATIONS"
     assert any("documentos indexados" in item for item in corpo["limitations"])
 
@@ -673,3 +673,158 @@ def test_payload_integro_continua_gravado(client):
     assert json.dumps(gravado["ahp"]["pairwise_matrix"]) == json.dumps(
         corpo["ahp"]["pairwise_matrix"]
     )
+
+
+# --- Revisão sugerida (saída do beco do bloco D) ----------------------------
+
+
+def test_inconsistencia_traz_caminhos_de_revisao(client):
+    """
+    Recusar sem indicar saída pode ser um beco. Com três dimensões a consistência
+    exige a13 = a12 × a23, e o produto estoura o teto 9 da escala de Saaty: há
+    pares de respostas para os quais nenhuma terceira alternativa fecha o CR. O
+    409 traz, junto do diagnóstico, revisões que fecham.
+    """
+    detalhe = client.post("/api/recommend", json=_envio_circular()).json()["detail"]
+
+    sugestao = detalhe["suggestion"]
+    assert sugestao is not None
+    assert sugestao["options"]
+
+    for opcao in sugestao["options"]:
+        assert opcao["consistency_ratio"] <= detalhe["consistency_threshold"]
+        assert len(opcao["changes"]) == opcao["changed_comparisons"] >= 1
+        for mudanca in opcao["changes"]:
+            assert mudanca["question_id"] in {
+                "comp_sust_perf",
+                "comp_sust_sec",
+                "comp_perf_sec",
+            }
+            assert mudanca["from"]["description"] != mudanca["to"]["description"]
+            assert mudanca["kind"] in {"intensity", "preference", "inversion"}
+
+
+def test_respostas_ciclicas_sao_declaradas_como_ciclo(client):
+    """
+    A > B, B > C e C > A não é intensidade mal calibrada: é contradição lógica.
+    Nenhum vetor de pesos torna as três afirmações verdadeiras, e o gestor precisa
+    ler isso — não receber um ajuste fino como se fosse questão de grau.
+    """
+    detalhe = client.post("/api/recommend", json=_envio_circular()).json()["detail"]
+
+    ciclo = detalhe["suggestion"]["cycle"]
+    assert ciclo is not None
+    assert len(ciclo["statements"]) == 3
+    assert set(ciclo["dimensions"]) == set(CRITERIOS)
+
+
+def test_sugestao_nao_altera_o_envio(client):
+    """
+    Sugerir não é corrigir: a revisão é do decisor (§4.2.3). O envio inconsistente
+    continua recusado, e os julgamentos relatados no 409 são os que o gestor
+    mandou — não os propostos.
+    """
+    resposta = client.post("/api/recommend", json=_envio_circular())
+    assert resposta.status_code == 409
+
+    detalhe = resposta.json()["detail"]
+    for opcao in detalhe["suggestion"]["options"]:
+        proposto = {m["pair"]: m["to"]["description"] for m in opcao["changes"]}
+        for par, julgamento in detalhe["judgments"].items():
+            if par in proposto:
+                assert julgamento["choice"] != proposto[par]
+
+
+def _varre_o_bloco_d():
+    """Percorre as 729 respostas possíveis do bloco D, uma a uma."""
+    import itertools
+
+    from ahp import derive_criteria_weights
+    from pairwise import EQUAL, matrix_value
+
+    dimensoes = ["sustainability", "performance", "security"]
+    pares = [
+        ("sustainability", "performance"),
+        ("sustainability", "security"),
+        ("performance", "security"),
+    ]
+    alternativas = [(EQUAL, None)] + [
+        (lado, intensidade)
+        for intensidade in ("moderate", "strong", "very_strong", "extreme")
+        for lado in ("esquerda", "direita")
+    ]
+
+    for combinacao in itertools.product(alternativas, repeat=3):
+        julgamentos = {}
+        for numero, ((left, right), (lado, intensidade)) in enumerate(zip(pares, combinacao)):
+            preferida = left if lado == "esquerda" else (right if lado == "direita" else EQUAL)
+            julgamentos[f"{left}|{right}"] = {
+                "question_id": f"comp_{numero}",
+                "preference": preferida,
+                "intensity": intensidade,
+                "ratio": matrix_value(left, right, preferida, intensidade),
+            }
+        yield combinacao, derive_criteria_weights(julgamentos, dimensoes)
+
+
+def test_toda_combinacao_bloqueada_tem_saida_sugerida():
+    """
+    A garantia que justifica a funcionalidade: para **todas** as combinações do
+    bloco D que reprovam no CR existe revisão sugerida — nenhuma resposta do
+    gestor leva a um estado sem saída indicada.
+    """
+    from consistency_repair import suggest_minimal_revision
+
+    bloqueadas = 0
+    for combinacao, resultado in _varre_o_bloco_d():
+        if resultado["is_consistent"]:
+            continue
+        bloqueadas += 1
+        sugestao = suggest_minimal_revision(resultado)
+        assert sugestao is not None, combinacao
+        assert sugestao["options"], combinacao
+        for opcao in sugestao["options"]:
+            assert opcao["consistency_ratio"] <= resultado["consistency_threshold"]
+
+    assert bloqueadas > 0
+
+
+def test_sugestao_nunca_inverte_a_preferencia_declarada():
+    """
+    O limite ético da funcionalidade. Inverter qual dimensão vence não é corrigir
+    o julgamento do gestor — é afirmar o contrário do que ele afirmou. A varredura
+    das 729 combinações mostra que nunca é necessário: sempre existe revisão que
+    preserva todas as direções declaradas, ainda que abrandando alguma para
+    "igual importância".
+
+    Se algum dia isso deixar de valer, o teste quebra antes de a interface passar
+    a induzir preferência em silêncio.
+    """
+    from consistency_repair import suggest_minimal_revision
+
+    for combinacao, resultado in _varre_o_bloco_d():
+        if resultado["is_consistent"]:
+            continue
+        sugestao = suggest_minimal_revision(resultado)
+        assert not sugestao["options"][0]["inverts_preference"], combinacao
+
+
+def test_ciclo_e_apontado_como_ciclo_e_nao_como_ajuste_de_intensidade():
+    """
+    Nos ciclos a saída aritmética (neutralizar preferências) é fraca como conselho,
+    e entregá-la sem explicação faria o gestor achar que errou a força da resposta.
+    O ciclo vem declarado justamente para a tela poder dizer o que de fato ocorreu.
+    """
+    from consistency_repair import suggest_minimal_revision
+
+    ciclicas = 0
+    for _combinacao, resultado in _varre_o_bloco_d():
+        if resultado["is_consistent"]:
+            continue
+        sugestao = suggest_minimal_revision(resultado)
+        if sugestao["cycle"] is None:
+            continue
+        ciclicas += 1
+        assert len(sugestao["cycle"]["statements"]) == 3
+
+    assert ciclicas > 0

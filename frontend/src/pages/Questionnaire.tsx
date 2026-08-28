@@ -11,7 +11,9 @@ import type {
   AnswerPayload,
   InconsistencyDetail,
   PairwiseAnswer,
+  PairwiseIntensity,
   QuestionDef,
+  RevisionOption,
   QuestionsFile,
 } from "../types";
 
@@ -179,6 +181,34 @@ export default function Questionnaire() {
     // Sai da lista de pendências só quando a comparação fica completa — trocar a
     // dimensão preferida zera a intensidade e volta a deixá-la em aberto.
     setMissing((prev) => (isComplete(next) ? prev.filter((q) => q.id !== id) : prev));
+  }
+
+  /**
+   * Adota um dos caminhos de revisão propostos pelo servidor no 409.
+   *
+   * A sugestão é aritmética: ela sabe qual combinação fecha o CR, não sabe o que
+   * a instituição precisa. Por isso nada é aplicado no envio anterior — o que
+   * acontece aqui é preencher as comparações na tela, para o gestor conferir e
+   * enviar de novo se concordar. O registro de auditoria continua gravando o que
+   * ele enviou, não o que foi proposto.
+   */
+  function adoptSuggestion(option: RevisionOption) {
+    setPairwiseValues((prev) => {
+      const next = { ...prev };
+      option.changes.forEach((change) => {
+        if (!change.question_id) return;
+        next[change.question_id] = {
+          left: change.left,
+          right: change.right,
+          preference: change.to.preference ?? "",
+          intensity: (change.to.intensity as PairwiseIntensity | null) ?? null,
+        };
+      });
+      return next;
+    });
+    setInconsistency(null);
+    const first = option.changes.find((c) => c.question_id)?.question_id;
+    if (first) requestAnimationFrame(() => focusQuestion(first));
   }
 
   function focusQuestion(id: string) {
@@ -562,6 +592,83 @@ export default function Questionnaire() {
                 : as outras duas respostas, juntas, apontam para uma prioridade diferente da que
                 você marcou aqui. Comece por ela.
               </p>
+            )}
+
+            {inconsistency.suggestion?.cycle && (
+              <p className="mb-3 rounded-xl bg-amber-100/70 px-3 py-2 text-sm leading-relaxed text-amber-900">
+                Suas respostas formam um <strong>ciclo</strong>:{" "}
+                {inconsistency.suggestion.cycle.statements.join("; ")}. Não existe ordem de
+                prioridade em que as três sejam verdadeiras ao mesmo tempo — não é questão de
+                calibrar a intensidade, uma delas precisa ceder. Só você pode dizer qual.
+              </p>
+            )}
+
+            {inconsistency.suggestion && inconsistency.suggestion.options.length > 0 && (
+              <div className="mb-4 rounded-xl border border-amber-300 bg-white/70 p-4">
+                <p className="mb-1 text-sm font-semibold text-amber-900">
+                  {inconsistency.suggestion.options.length > 1
+                    ? "Caminhos possíveis — escolha qual julgamento revisar"
+                    : "Um caminho possível"}
+                </p>
+                <p className="mb-3 text-xs leading-relaxed text-amber-800">
+                  Cada opção fecha o limite de consistência. Nenhuma é mais certa que a outra: a
+                  aritmética não sabe o que a sua instituição precisa, só sabe quais combinações
+                  são coerentes entre si.
+                </p>
+
+                <ul className="space-y-2">
+                  {inconsistency.suggestion.options.map((option, i) => {
+                    const applicable = option.changes.every((c) => c.question_id);
+                    return (
+                      <li
+                        key={i}
+                        className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-relaxed text-amber-900"
+                      >
+                        {option.changes.map((change) => (
+                          <div key={change.pair} className="mb-1.5">
+                            <span className="block text-amber-700 line-through decoration-amber-400">
+                              {change.from.description}
+                            </span>
+                            <span className="mt-0.5 block font-medium">
+                              → {change.to.description}
+                            </span>
+                            {change.kind === "inversion" && (
+                              <span className="mt-1 inline-block rounded bg-amber-200 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900">
+                                inverte a sua preferência
+                              </span>
+                            )}
+                            {change.kind === "preference" && (
+                              <span className="mt-1 inline-block rounded bg-amber-200/70 px-1.5 py-0.5 text-[11px] font-medium text-amber-900">
+                                abandona a preferência declarada
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                        <div className="mt-2 flex flex-wrap items-center gap-3">
+                          {applicable && (
+                            <button
+                              type="button"
+                              onClick={() => adoptSuggestion(option)}
+                              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-amber-700"
+                            >
+                              Usar esta
+                            </button>
+                          )}
+                          <span className="text-xs text-amber-700">
+                            razão de consistência {option.consistency_ratio.toFixed(3)}
+                          </span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                <p className="mt-3 text-xs leading-relaxed text-amber-800">
+                  Adotar uma opção só preenche as comparações na tela, para você conferir e
+                  enviar — nada é alterado sem o seu envio. Se nenhuma descrever a sua prioridade
+                  de verdade, ignore-as e revise pelo caminho abaixo.
+                </p>
+              </div>
             )}
 
             <p className="mb-2 text-sm text-amber-800">
