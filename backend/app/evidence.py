@@ -653,47 +653,118 @@ def enforce_unit_consistency(
 # ---------------------------------------------------------------------------
 
 
-async def _extract_dimension(
-    provider: Mapping[str, str],
+# ---------------------------------------------------------------------------
+# Cache de extração
+# ---------------------------------------------------------------------------
+#
+# Guarda a resposta BRUTA da LLM, antes da validação. A validação (§19), a
+# rubrica (§10.1) e a normalização (§9) tornam a rodar sobre o texto guardado —
+# uma correção de regra passa a valer para as leituras já em cache em vez de
+# ficar congelada nelas.
+#
+# O cache é otimização, não dependência: qualquer falha ao consultá-lo ou
+# gravá-lo é registrada e a extração segue pela LLM. Uma avaliação nunca deixa
+# de acontecer porque o banco de auditoria não respondeu.
+
+
+def _cache_coordenadas(
+    provider_id: str, dimension: str, chunks: Sequence[Dict[str, Any]], prompt: Any
+) -> Optional[Tuple[str, str, str]]:
+    """`(chave, impressão dos trechos, modelo)` — ou `None` se não houver chave estável."""
+    chunk_ids = [str(c["chunk_id"]) for c in chunks if c.get("chunk_id")]
+    if not chunk_ids:
+        # Índice antigo, sem `chunk_id`: não há como saber se os trechos são os
+        # mesmos, e uma chave frouxa devolveria a leitura de outro contexto.
+        return None
+    try:
+        import db
+        from config import get_settings
+
+        if not get_settings().llm_cache_enabled:
+            return None
+        modelo = str(get_settings().llm_model)
+        impressao = db.chunks_fingerprint(chunk_ids)
+        chave = db.extraction_cache_key(
+            provider_id,
+            dimension,
+            impressao,
+            prompt.prompt_id,
+            prompt.prompt_version,
+            modelo,
+        )
+        return chave, impressao, modelo
+    except Exception as exc:  # noqa: BLE001 - cache indisponível não é erro de avaliação
+        logger.warning("Cache de extração indisponível: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def _cache_lookup(
+    provider_id: str, dimension: str, chunks: Sequence[Dict[str, Any]], prompt: Any
+) -> Optional["DimensionEvidence"]:
+    coord = _cache_coordenadas(provider_id, dimension, chunks, prompt)
+    if coord is None:
+        return None
+    chave, _, _ = coord
+    try:
+        import db
+
+        bruto = db.get_cached_extraction(chave)
+        if bruto is None:
+            return None
+        return DimensionEvidence.model_validate_json(bruto)
+    except Exception as exc:  # noqa: BLE001
+        # Entrada corrompida ou esquema mudado: extrai de novo em vez de falhar.
+        logger.warning(
+            "Leitura em cache descartada para %s/%s: %s: %s",
+            provider_id, dimension, type(exc).__name__, exc,
+        )
+        return None
+
+
+def _cache_store(
+    provider_id: str,
     dimension: str,
+    chunks: Sequence[Dict[str, Any]],
+    prompt: Any,
+    data: "DimensionEvidence",
+) -> None:
+    coord = _cache_coordenadas(provider_id, dimension, chunks, prompt)
+    if coord is None:
+        return
+    chave, impressao, modelo = coord
+    try:
+        import db
+
+        db.save_cached_extraction(
+            cache_key=chave,
+            provider_id=provider_id,
+            dimension=dimension,
+            chunks_hash=impressao,
+            prompt_id=prompt.prompt_id,
+            prompt_version=prompt.prompt_version,
+            model=modelo,
+            raw_response=data.model_dump_json(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Extração não guardada em cache: %s: %s", type(exc).__name__, exc)
+
+
+def _findings_from_raw(
+    data: "DimensionEvidence",
     indicators: Sequence[IndicatorConfig],
-    chunks: List[Dict[str, Any]],
+    provider_id: str,
+    chunks: Sequence[Dict[str, Any]],
     methodology: Methodology,
     log: GuardrailLog,
-    semaphore: asyncio.Semaphore,
-) -> Tuple[List[Finding], Optional[LLMRunRecord]]:
-    """Uma chamada à LLM: um provedor, uma dimensão, os indicadores dela."""
-    provider_id = provider["id"]
+) -> List[Finding]:
+    """
+    Valida a resposta bruta e devolve um `Finding` por indicador pedido.
 
-    if not chunks:
-        # Sem trecho recuperado não há o que interpretar. Chamar a LLM aqui
-        # convidaria exatamente a resposta que a regra 2 do prompt proíbe.
-        return [_missing(provider_id, i, "Nenhum trecho recuperado para o indicador.") for i in indicators], None
-
-    prompt = get_prompt(PROMPT_ID).render(
-        provider_name=str(provider.get("name") or provider_id),
-        dimension_name=methodology.dimension_name(dimension),
-        indicators=describe_indicators(indicators),
-        document_context=wrap_document_context(chunks, log),
-    )
-
-    async with semaphore:
-        result = await get_llm_client().structured_generate(prompt, DimensionEvidence)
-
-    if not result.ok or not isinstance(result.data, DimensionEvidence):
-        log.record(
-            rule_id="EVIDENCE_EXTRACTION_UNAVAILABLE",
-            stage=STAGE_LLM_OUTPUT,
-            action=ACTION_WARN,
-            reason=(
-                f"Extração de evidências não validada ({result.run.status}): "
-                f"{result.run.error or 'sem detalhe'}."
-            ),
-            target=f"{provider_id}/{dimension}",
-        )
-        motivo = f"Extração indisponível ({result.run.status})."
-        return [_missing(provider_id, i, motivo) for i in indicators], result.run
-
+    Separada de `_extract_dimension` porque roda nos dois caminhos — extração
+    nova e leitura em cache —, e precisa ser exatamente a mesma nos dois: se o
+    cache pulasse a validação, uma leitura guardada entraria no cálculo por uma
+    porta que a §19 não vigia.
+    """
     # Rótulo entregue no bloco (T1, T2…) → chunk_id real. O chunk_id também é
     # aceito como chave, para uma resposta que o traga continuar válida.
     fontes_entregues: Dict[str, str] = {}
@@ -703,10 +774,12 @@ async def _extract_dimension(
             continue
         fontes_entregues[chunk_label(indice)] = real
         fontes_entregues[real] = real
+
+    dimension = indicators[0].dimension if indicators else ""
     por_id = {i.id: i for i in indicators}
     respondidos: Dict[str, Finding] = {}
 
-    for raw in result.data.findings:
+    for raw in data.findings:
         indicator = por_id.get(raw.indicator_id)
         if indicator is None:
             # Regra 3 do prompt: indicador fora da lista fornecida.
@@ -738,7 +811,65 @@ async def _extract_dimension(
             finding = _missing(provider_id, indicator, "Indicador omitido pela extração.")
         findings.append(finding)
 
-    return findings, result.run
+    return findings
+
+
+async def _extract_dimension(
+    provider: Mapping[str, str],
+    dimension: str,
+    indicators: Sequence[IndicatorConfig],
+    chunks: List[Dict[str, Any]],
+    methodology: Methodology,
+    log: GuardrailLog,
+    semaphore: asyncio.Semaphore,
+) -> Tuple[List[Finding], Optional[LLMRunRecord]]:
+    """Uma chamada à LLM: um provedor, uma dimensão, os indicadores dela."""
+    provider_id = provider["id"]
+
+    if not chunks:
+        # Sem trecho recuperado não há o que interpretar. Chamar a LLM aqui
+        # convidaria exatamente a resposta que a regra 2 do prompt proíbe.
+        return [_missing(provider_id, i, "Nenhum trecho recuperado para o indicador.") for i in indicators], None
+
+    prompt = get_prompt(PROMPT_ID).render(
+        provider_name=str(provider.get("name") or provider_id),
+        dimension_name=methodology.dimension_name(dimension),
+        indicators=describe_indicators(indicators),
+        document_context=wrap_document_context(chunks, log),
+    )
+
+    # Leitura já feita para estes mesmos trechos, com este prompt e este modelo.
+    # Guardar a extração é o que torna dois envios idênticos comparáveis: sem
+    # isso, o não-determinismo residual do modelo (temperatura 0 não o elimina)
+    # fazia o mesmo documento sair `FOUND` numa execução e `PARTIAL` na
+    # seguinte, e a §11.1 derrubava o indicador inteiro por causa de uma célula.
+    cached = _cache_lookup(provider_id, dimension, chunks, prompt)
+    if cached is not None:
+        return _findings_from_raw(
+            cached, indicators, provider_id, chunks, methodology, log
+        ), None
+
+    async with semaphore:
+        result = await get_llm_client().structured_generate(prompt, DimensionEvidence)
+
+    if not result.ok or not isinstance(result.data, DimensionEvidence):
+        log.record(
+            rule_id="EVIDENCE_EXTRACTION_UNAVAILABLE",
+            stage=STAGE_LLM_OUTPUT,
+            action=ACTION_WARN,
+            reason=(
+                f"Extração de evidências não validada ({result.run.status}): "
+                f"{result.run.error or 'sem detalhe'}."
+            ),
+            target=f"{provider_id}/{dimension}",
+        )
+        motivo = f"Extração indisponível ({result.run.status})."
+        return [_missing(provider_id, i, motivo) for i in indicators], result.run
+
+    _cache_store(provider_id, dimension, chunks, prompt, result.data)
+    return _findings_from_raw(
+        result.data, indicators, provider_id, chunks, methodology, log
+    ), result.run
 
 
 async def extract_performances(
@@ -775,28 +906,44 @@ async def extract_performances(
         por_dimensao.setdefault(indicator.dimension, []).append(indicator)
 
     # -- 1. Recuperação, um par (provedor × indicador) por consulta -----------
+    #
+    # As consultas são montadas todas antes e buscadas de uma vez. A §4.4 exige
+    # que a recuperação seja *por indicador*, e continua sendo: são as mesmas 39
+    # consultas, com o mesmo texto e o mesmo filtro por provedor. O que mudou é
+    # que os 39 textos viajam juntos até a API de embeddings — 17,5s de
+    # ida-e-voltas sequenciais viraram 0,44s, sem tocar em nenhum vetor.
     hints = dict(query_hints or {})
+    pares: List[Tuple[Mapping[str, str], IndicatorConfig, Tuple[str, ...]]] = [
+        (provider, indicator, tuple(hints.get(indicator.id, ())))
+        for provider in providers
+        for indicator in indicators
+    ]
+    consultas = [
+        (rag.query_for_indicator(indicator, provider.get("name"), extras), provider["id"])
+        for provider, indicator, extras in pares
+    ]
+    resultados = await run_in_threadpool(
+        rag.search_many, consultas, CHUNKS_PER_INDICATOR, session_id
+    )
+
     chunks_por_par: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    for provider in providers:
-        for indicator in indicators:
-            extras = tuple(hints.get(indicator.id, ()))
-            query_text, hits = await run_in_threadpool(
-                _retrieve_for_indicator, indicator, provider, session_id, extras
-            )
-            chunks_por_par[(provider["id"], indicator.id)] = hits
-            resultado.rag_audit.append(
-                {
-                    "dimension": indicator.dimension,
-                    "indicator_id": indicator.id,
-                    "provider_id": provider["id"],
-                    "query_text": query_text,
-                    # Separa o que veio da pesquisa do que veio do Bloco E: sem
-                    # isso, a consulta gravada não diz por que ficou como ficou.
-                    "refined_terms": list(extras),
-                    "top_k": CHUNKS_PER_INDICATOR,
-                    "chunks": hits,
-                }
-            )
+    for (provider, indicator, extras), (query_text, _), hits in zip(
+        pares, consultas, resultados
+    ):
+        chunks_por_par[(provider["id"], indicator.id)] = hits
+        resultado.rag_audit.append(
+            {
+                "dimension": indicator.dimension,
+                "indicator_id": indicator.id,
+                "provider_id": provider["id"],
+                "query_text": query_text,
+                # Separa o que veio da pesquisa do que veio do Bloco E: sem
+                # isso, a consulta gravada não diz por que ficou como ficou.
+                "refined_terms": list(extras),
+                "top_k": CHUNKS_PER_INDICATOR,
+                "chunks": hits,
+            }
+        )
 
     # -- 2. Interpretação, uma chamada por (provedor × dimensão) --------------
     if concurrency is None:

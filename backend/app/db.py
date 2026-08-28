@@ -34,6 +34,7 @@ acrescenta colunas novas a tabelas que já existiam. É o suficiente para SQLite
 preserva os envios já gravados; nenhuma coluna é removida ou reescrita.
 """
 
+import hashlib
 import json
 import os
 import uuid
@@ -427,6 +428,50 @@ class Document(Base):
     embedding_model: Mapped[Optional[str]] = mapped_column(String(120))
 
 
+class ExtractionCache(Base):
+    """
+    Saída bruta da LLM para uma chamada de extração, reaproveitada entre envios.
+
+    **O problema que resolve.** Duas avaliações com o mesmo questionário sobre o
+    mesmo índice liam o mesmo documento de formas diferentes. Medido em cinco
+    execuções: 4 das 39 células (provedor × indicador) oscilaram entre `FOUND`,
+    `PARTIAL` e `NOT_FOUND`, e como a §11.1 exige evidência válida para todos os
+    provedores na mesma execução, cada oscilação derrubava o indicador inteiro —
+    quatro dos treze entravam de forma intermitente.
+
+    A causa não é amostragem: o registro mostra as chamadas todas no mesmo modelo,
+    com temperatura 0 e sem fallback. É o não-determinismo residual de um modelo
+    servido por API, que a temperatura reduz e não elimina. Num relatório que se
+    apresenta como auditável, dois envios idênticos precisam dar o mesmo
+    resultado; guardar a leitura é o que garante isso.
+
+    **O que é guardado.** A resposta **bruta**, antes da validação. A validação
+    (§19), a rubrica (§10.1) e a normalização (§9) são código determinístico e
+    tornam a rodar sobre o texto guardado — assim uma correção de regra passa a
+    valer também para as extrações já em cache, em vez de ficar congelada nelas.
+
+    **A chave é o que faria a leitura mudar**: o provedor, a dimensão, os trechos
+    exatos que foram entregues, a versão do prompt e o modelo. Mudou qualquer um,
+    é outra leitura e o cache não responde. `chunks_hash` cobre conteúdo e ordem
+    dos trechos: recuperação diferente é evidência diferente.
+    """
+
+    __tablename__ = "extraction_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(String(32), index=True)
+    dimension: Mapped[str] = mapped_column(String(40), index=True)
+    chunks_hash: Mapped[str] = mapped_column(String(64))
+    prompt_id: Mapped[str] = mapped_column(String(80))
+    prompt_version: Mapped[str] = mapped_column(String(40))
+    model: Mapped[str] = mapped_column(String(120))
+    #: JSON bruto devolvido pela LLM, como veio.
+    raw_response: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
+    #: Quantas avaliações reaproveitaram esta leitura. Só telemetria.
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+
+
 # Colunas acrescentadas depois que a tabela já existia em instalações no ar.
 # `create_all` cria tabelas novas, mas não altera tabelas existentes — daí o
 # passo aditivo abaixo. Só ADD COLUMN: nada é removido nem reescrito.
@@ -754,6 +799,114 @@ def _settings_value(attribute: str) -> Optional[str]:
         return getattr(get_settings(), attribute, None)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Cache de extração
+# ---------------------------------------------------------------------------
+
+
+def extraction_cache_key(
+    provider_id: str,
+    dimension: str,
+    chunks_hash: str,
+    prompt_id: str,
+    prompt_version: str,
+    model: str,
+) -> str:
+    """
+    Chave determinística da leitura: tudo o que, mudando, mudaria a resposta.
+
+    O modelo e a versão do prompt entram na chave em vez de invalidarem o cache
+    por varredura: assim uma extração feita com o prompt v5 continua no banco,
+    identificável, ao lado da mesma extração com o v6. A auditoria de um envio
+    antigo continua encontrando exatamente a leitura que o produziu.
+    """
+    material = "\x1f".join(
+        [provider_id, dimension, chunks_hash, prompt_id, prompt_version, model]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def chunks_fingerprint(chunk_ids: List[str]) -> str:
+    """
+    Impressão dos trechos entregues, em ordem.
+
+    A ordem entra porque o prompt numera os blocos (`T1`, `T2`…) e a numeração é
+    o endereço que a evidência cita: os mesmos trechos em ordem diferente são
+    outro contexto, e reaproveitar a leitura faria a citação apontar para o
+    trecho errado.
+    """
+    return hashlib.sha256("\x1f".join(chunk_ids).encode("utf-8")).hexdigest()
+
+
+def get_cached_extraction(cache_key: str) -> Optional[str]:
+    """Resposta bruta guardada para esta chave, ou `None`. Conta o acerto."""
+    with session_scope() as session:
+        linha = session.get(ExtractionCache, cache_key)
+        if linha is None:
+            return None
+        linha.hits = (linha.hits or 0) + 1
+        return linha.raw_response
+
+
+def save_cached_extraction(
+    cache_key: str,
+    provider_id: str,
+    dimension: str,
+    chunks_hash: str,
+    prompt_id: str,
+    prompt_version: str,
+    model: str,
+    raw_response: str,
+) -> None:
+    """
+    Guarda a leitura bruta. Chave já existente não é sobrescrita.
+
+    Não sobrescrever é o ponto: se dois processos extraírem em paralelo e o
+    modelo responder coisas diferentes, vale a primeira — que é justamente a
+    estabilidade que o cache existe para dar. Sobrescrever devolveria a
+    oscilação por outra porta.
+    """
+    with session_scope() as session:
+        if session.get(ExtractionCache, cache_key) is not None:
+            return
+        session.add(
+            ExtractionCache(
+                cache_key=cache_key,
+                provider_id=provider_id,
+                dimension=dimension,
+                chunks_hash=chunks_hash,
+                prompt_id=prompt_id,
+                prompt_version=prompt_version,
+                model=model,
+                raw_response=raw_response,
+            )
+        )
+
+
+def clear_extraction_cache() -> int:
+    """Esvazia o cache. Devolve quantas leituras foram descartadas."""
+    with session_scope() as session:
+        linhas = session.query(ExtractionCache).all()
+        total = len(linhas)
+        for linha in linhas:
+            session.delete(linha)
+        return total
+
+
+def extraction_cache_stats() -> Dict[str, Any]:
+    """Tamanho e aproveitamento do cache, para a área de gestão."""
+    with session_scope() as session:
+        linhas = session.query(ExtractionCache).all()
+        return {
+            "entries": len(linhas),
+            "hits": sum(l.hits or 0 for l in linhas),
+            "by_prompt_version": {
+                v: sum(1 for l in linhas if l.prompt_version == v)
+                for v in sorted({l.prompt_version for l in linhas})
+            },
+        }
 
 
 # ---------------------------------------------------------------------------

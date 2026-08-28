@@ -63,6 +63,14 @@ class _FakeLLM:
 
 
 def _refinar(monkeypatch, indicadores, payload, status="OK", qa=TEXTO, log=None):
+    # Cache desligado: estes testes verificam o que a LLM recebe e o que o código
+    # faz com a resposta dela. Com o cache ligado, uma leitura guardada de outra
+    # execução responderia antes da chamada e o `fake` nunca veria o prompt —
+    # o teste passaria a medir o cache em vez do refinamento.
+    monkeypatch.setenv("LLM_CACHE_ENABLED", "false")
+    from config import reload_settings
+
+    reload_settings()
     fake = _FakeLLM(payload, status)
     monkeypatch.setattr(query_refinement, "get_llm_client", lambda: fake)
     hints, run = asyncio.run(

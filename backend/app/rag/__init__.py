@@ -12,7 +12,7 @@ from rag.index import (
 from rag.ingest import detect_provider_id, ingest_paths, load_and_chunk
 from rag.metadata import SCOPE_GLOBAL, evaluation_scope
 from rag.queries import query_for_indicator
-from rag.retrieval import format_hit, search
+from rag.retrieval import format_hit, search, search_many
 from rag.terms import terms_found
 
 __all__ = [
@@ -31,5 +31,6 @@ __all__ = [
     "query_for_indicator",
     "save",
     "search",
+    "search_many",
     "terms_found",
 ]

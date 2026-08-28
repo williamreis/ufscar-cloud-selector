@@ -10,7 +10,6 @@
     "Campos com \"status\": \"provisional\" ainda dependem de confirmação na",
     "dissertação. Eles NÃO são decisão de implementação."
   ],
-
   "relevance_coefficients": {
     "_decisao": "TODO ACADÊMICO 01 — resolvido: 'irrelevante' vale 1.",
     "status": "decided",
@@ -46,7 +45,6 @@
       "Não sei / não tenho informações suficientes": "nao_sei"
     }
   },
-
   "ahp": {
     "_nota": [
       "A §6.3 descreve o procedimento da dissertação: somar cada coluna, dividir",
@@ -59,13 +57,20 @@
       "pequena, mas acima de erro de ponto flutuante."
     ],
     "weight_method": "column_mean",
-    "consistency_threshold": 0.10,
+    "consistency_threshold": 0.1,
     "random_index": {
-      "1": 0.0, "2": 0.0, "3": 0.58, "4": 0.90, "5": 1.12,
-      "6": 1.24, "7": 1.32, "8": 1.41, "9": 1.45, "10": 1.49
+      "1": 0.0,
+      "2": 0.0,
+      "3": 0.58,
+      "4": 0.9,
+      "5": 1.12,
+      "6": 1.24,
+      "7": 1.32,
+      "8": 1.41,
+      "9": 1.45,
+      "10": 1.49
     }
   },
-
   "default_rubrics": {
     "_decisao": "TODO ACADÊMICO 02 — resolvido: as rubricas são o Quadro 23 da dissertação.",
     "status": "decided",
@@ -114,9 +119,9 @@
       "categories": {
         "nao_identificado": null,
         "baixo": 0.25,
-        "moderado": 0.50,
+        "moderado": 0.5,
         "alto": 0.75,
-        "completo": 1.00
+        "completo": 1.0
       },
       "conditions": {
         "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
@@ -127,25 +132,42 @@
       }
     }
   },
-
   "tie_break": {
-    "_todo": "TODO ACADÊMICO 03 — política de desempate.",
+    "_todo": "TODO ACADÊMICO 03 — política de desempate e margem de indiferença.",
     "status": "provisional",
     "_nota": [
       "'show_tie' é o único valor que não inventa critério oculto: provedores com",
       "a mesma pontuação recebem a mesma posição e o empate aparece no relatório.",
-      "Qualquer outra política precisa ser decidida e documentada na dissertação."
+      "Qualquer outra política precisa ser decidida e documentada na dissertação.",
+      "",
+      "`tolerance` é a MARGEM DE INDIFERENÇA: abaixo dela, duas pontuações não são",
+      "tratadas como diferentes. Estava em 1e-09, que só reconhece empate exato — e",
+      "com isso o relatório coroava um vencedor com 0,002 de vantagem sobre o",
+      "terceiro colocado, apresentando como decisão o que o cálculo não decidiu.",
+      "",
+      "O valor 0,02 tem uma âncora: a pontuação vive em [0,1] e a rubrica do Quadro",
+      "23 anda de 0,25 em 0,25. Um indicador com 8% de peso efetivo que suba um",
+      "nível inteiro na rubrica move a pontuação em 0,02. Diferenças menores que",
+      "isso são menores que o menor passo que o instrumento sabe medir, e chamá-las",
+      "de classificação seria ler ruído como ordem.",
+      "",
+      "É decisão acadêmica, não de implementação: mudá-la muda quantos empates o",
+      "relatório declara, e por isso ela mora aqui e entra no hash de versão."
     ],
     "policy": "show_tie",
-    "tolerance": 1e-09
+    "tolerance": 0.02
   },
-
   "evidence": {
     "_nota": [
       "Estados da §11. Ausência de evidência não é desempenho zero: NOT_FOUND",
       "retira o indicador do conjunto comparável, não zera a nota do provedor."
     ],
-    "statuses": ["FOUND", "PARTIAL", "NOT_FOUND", "INVALID"],
+    "statuses": [
+      "FOUND",
+      "PARTIAL",
+      "NOT_FOUND",
+      "INVALID"
+    ],
     "_todo_partial": [
       "A §29.2 evita atribuir peso arbitrário como 0.5 ao PARTIAL sem decisão",
       "acadêmica. Enquanto não houver decisão, PARTIAL não entra no conjunto",

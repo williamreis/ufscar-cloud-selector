@@ -360,6 +360,7 @@ export interface RecommendationResponse {
   evidences: Record<string, EvidenceItem[]>;
   ahp?: AhpResult;
   synthesis?: SynthesisResult;
+  sensitivity?: SensitivityResult | null;
   indicator_weights?: IndicatorWeights;
   status?: string;
   limitations?: string[];
@@ -367,6 +368,41 @@ export interface RecommendationResponse {
   submission_id?: string | null;
   unscored_answers?: string[];
   coverage?: Coverage;
+}
+
+/** Quanto o peso de uma dimensão precisa mudar para o líder deixar de liderar */
+export interface DimensionSensitivity {
+  dimension: string;
+  weight: number;
+  /** Algum peso em [0,1] dessa dimensão troca o primeiro colocado */
+  flips: boolean;
+  /** Menor deslocamento de peso que troca o líder, em pontos (0,08 = 8 p.p.) */
+  flip_delta: number | null;
+  /** Peso da dimensão no ponto de virada */
+  flip_weight: number | null;
+  /** Quem passa a liderar ali */
+  flip_leader: string | null;
+}
+
+/**
+ * Robustez do 1º lugar.
+ *
+ * Mede o resultado, não entra nele: nenhum campo daqui altera pontuação, peso ou
+ * posição. Existe porque uma liderança de 0,002 e uma de 0,20 são exibidas com a
+ * mesma firmeza, e só esta seção distingue as duas.
+ */
+export interface SensitivityResult {
+  leader: string;
+  /** Distância entre o 1º e o 2º colocados, na escala da pontuação */
+  margin: number;
+  /** A margem cabe dentro da margem de indiferença do scales.json */
+  margin_within_tolerance: boolean;
+  tie_break_tolerance: number;
+  /** Nenhum peso de dimensão, sozinho, troca o primeiro colocado */
+  robust: boolean;
+  most_fragile_dimension: string | null;
+  most_fragile_delta: number | null;
+  dimensions: DimensionSensitivity[];
 }
 
 /** Cobertura documental do ranking e procedência das notas dos provedores */
