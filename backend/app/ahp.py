@@ -243,7 +243,12 @@ def derive_criteria_weights(
         "weights": {k: float(w) for k, w in zip(keys, weights)},
         "criteria_order": keys,
         "weight_method": method,
-        "pairwise_matrix": [[round(float(v), 4) for v in row] for row in matrix],
+        # 6 casas, e não 4: com 4, o recíproco de 1/3 saía 0,3333 ao lado do 3,0
+        # exato, e o produto a_ij × a_ji dava 0,9999 — quem refizesse a conta a
+        # partir da matriz publicada obtinha uma matriz que não é recíproca.
+        # A fonte exata de cada julgamento continua sendo `preference` +
+        # `saaty_intensity` logo abaixo, que são a resposta, não um derivado.
+        "pairwise_matrix": [[round(float(v), 6) for v in row] for row in matrix],
         # §32.2 exige a matriz normalizada persistida junto da original: é o passo
         # intermediário que permite refazer a conta dos pesos à mão.
         "normalized_matrix": [[round(float(v), 6) for v in row] for row in normalized],
@@ -252,7 +257,7 @@ def derive_criteria_weights(
         # memória de cálculo mostra a resposta, não só o número derivado dela.
         "judgments": {
             k: {
-                "ratio": round(float(v["ratio"]), 4),
+                "ratio": round(float(v["ratio"]), 6),
                 "choice": v.get("choice"),
                 "question_id": v.get("question_id"),
                 "preference": v.get("preference"),

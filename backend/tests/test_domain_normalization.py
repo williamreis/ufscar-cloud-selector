@@ -118,6 +118,80 @@ def test_sem_valores_nao_ha_evidencia():
     assert motivo == EXCLUDED_NO_EVIDENCE
 
 
+# --- Medição absoluta: indicadores de rubrica ------------------------------
+
+
+def test_absoluto_preserva_o_valor_da_rubrica():
+    """
+    O Quadro 23 já entrega a nota numa escala fixa de 0 a 1. Dividir pelo maior
+    a converteria em relativa, e a nota deixaria de significar o mesmo em dois
+    relatórios diferentes.
+    """
+    resultado, motivo = normalize_values(
+        {"a": 0.75, "b": 0.5, "c": 1.0}, "benefit", absolute=True
+    )
+    assert motivo is None
+    assert resultado == {"a": 0.75, "b": 0.5, "c": 1.0}
+
+
+def test_absoluto_distingue_todos_ruins_de_todos_otimos():
+    """
+    O caso que motivou a mudança. No modo relativo os dois cenários davam 1,000
+    para todo mundo: uma dimensão em que ninguém atende recebia nota máxima, e
+    ficava indistinguível de uma em que todos atendem integralmente.
+    """
+    todos_baixos = {"a": 0.25, "b": 0.25, "c": 0.25}
+    todos_completos = {"a": 1.0, "b": 1.0, "c": 1.0}
+
+    relativo_baixo, _ = normalize_values(todos_baixos, "benefit")
+    relativo_completo, _ = normalize_values(todos_completos, "benefit")
+    assert relativo_baixo == relativo_completo  # o defeito, preservado como registro
+
+    absoluto_baixo, _ = normalize_values(todos_baixos, "benefit", absolute=True)
+    absoluto_completo, _ = normalize_values(todos_completos, "benefit", absolute=True)
+    assert absoluto_baixo != absoluto_completo
+    assert all(v == 0.25 for v in absoluto_baixo.values())
+    assert all(v == 1.0 for v in absoluto_completo.values())
+
+
+def test_absoluto_nao_depende_do_concorrente():
+    """Um `alto` vale 0,75 esteja ele sozinho ou ao lado de um `completo`."""
+    sozinho, _ = normalize_values({"a": 0.75, "b": 0.75}, "benefit", absolute=True)
+    acompanhado, _ = normalize_values({"a": 0.75, "b": 1.0}, "benefit", absolute=True)
+    assert sozinho["a"] == acompanhado["a"] == 0.75
+
+
+def test_absoluto_recusa_valor_fora_da_escala():
+    """Fora de [0,1] não é rubrica: é engano de configuração, e precisa aparecer."""
+    resultado, motivo = normalize_values({"a": 1.4, "b": 0.75}, "benefit", absolute=True)
+    assert resultado == {}
+    assert motivo == EXCLUDED_INVALID_FOR_COMPARISON
+
+
+def test_qualitativo_usa_medicao_absoluta_no_conjunto_comparavel(metodologia):
+    """
+    A escolha é por tipo de indicador: `build_comparability_set` liga o modo
+    absoluto nos qualitativos e mantém a divisão pelo máximo nos quantitativos.
+    """
+    iam = metodologia.by_id("security_iam")
+    assert iam.is_qualitative
+
+    conjunto = build_comparability_set(
+        [
+            PerformanceInput("aws", "security_iam", STATUS_FOUND, 0.75),
+            PerformanceInput("gcp", "security_iam", STATUS_FOUND, 0.75),
+        ],
+        ["aws", "gcp"],
+        ["security_iam"],
+        metodologia,
+    )
+    assert "security_iam" in conjunto.valid
+    normalizados = conjunto.normalized_by()
+    # Relativo daria 1,0 para os dois; absoluto preserva o nível declarado.
+    assert normalizados[("aws", "security_iam")] == 0.75
+    assert normalizados[("gcp", "security_iam")] == 0.75
+
+
 # --- Rubrica qualitativa (§10.1) -------------------------------------------
 
 

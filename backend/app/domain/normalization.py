@@ -171,6 +171,7 @@ def value_from_category(
 def normalize_values(
     values: Mapping[str, float],
     direction: str,
+    absolute: bool = False,
 ) -> Tuple[Dict[str, Optional[float]], Optional[str]]:
     """
     Normaliza os valores de **um** indicador entre os provedores.
@@ -181,9 +182,33 @@ def normalize_values(
     Devolve `(normalizados, motivo_de_exclusão)`. Quando a fórmula fica
     indefinida, os normalizados voltam vazios e o motivo diz qual caso ocorreu —
     em nenhuma hipótese há divisão por zero nem valor substituto.
+
+    **`absolute=True` desliga a divisão** (medição absoluta de Saaty). Vale para
+    os indicadores de rubrica: o Quadro 23 já entrega o valor numa escala fixa de
+    0 a 1, e dividir pelo maior converteria essa escala absoluta em relativa. As
+    consequências dessa conversão foram medidas e são graves:
+
+      - três provedores todos em `baixo` (0,25) e três todos em `completo` (1,00)
+        produziam **exatamente o mesmo resultado** — 1,000 para todos —, de modo
+        que uma dimensão em que ninguém atende recebia nota máxima;
+      - o mesmo `alto` valia 1,000 num relatório e 0,750 em outro, conforme o
+        concorrente, e não conforme a evidência. A nota deixava de ser
+        comparável entre avaliações.
+
+    O modo relativo continua sendo o certo para os quantitativos: PUE e
+    disponibilidade são razões sem teto natural, e a régua ali é o melhor valor
+    observado. A escolha é por tipo de indicador, não uma troca global.
     """
     if not values:
         return {}, EXCLUDED_NO_EVIDENCE
+
+    if absolute:
+        # A escala da rubrica é o próprio valor. Fora de [0,1] não é rubrica —
+        # é engano de configuração, e entra na comparação como inválido em vez
+        # de ser recortado em silêncio.
+        if any(v < 0.0 or v > 1.0 for v in values.values()):
+            return {}, EXCLUDED_INVALID_FOR_COMPARISON
+        return dict(values), None
 
     numbers = list(values.values())
 
@@ -274,7 +299,9 @@ def build_comparability_set(
             continue
 
         valores_normalizados, motivo = normalize_values(
-            {pid: usaveis[pid] for pid in provedores}, indicator.direction or DIRECTION_BENEFIT
+            {pid: usaveis[pid] for pid in provedores},
+            indicator.direction or DIRECTION_BENEFIT,
+            absolute=indicator.is_qualitative,
         )
         if motivo is not None:
             excluded[indicator.id] = motivo

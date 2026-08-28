@@ -23,6 +23,21 @@ direta:
     Restrição metodológica     RESTRIÇÃO METODOLÓGICA   9, 10
     Ausência de evidência      AUSÊNCIA DE EVIDÊNCIA    11
 
+**Por que existem as regras 5.1 a 5.4.** A regra 5 diz *o que* devolver
+(categoria da allowlist); ela não diz *como escolher*. Sem isso o modelo
+convergia para um nível só: em cinco simulações, 53 das 54 classificações
+qualitativas saíram `alto`. Uma rubrica de quatro níveis usando um não separa
+provedor nenhum — todos empatavam no indicador, ele contribuía o mesmo para
+todos, e o ranking passava a ser decidido pelos poucos indicadores
+quantitativos, independentemente dos pesos que o gestor declarou.
+
+As quatro regras não alteram o Quadro 23: os níveis e as condições continuam os
+da dissertação, vindos de `scales.json`. O que elas acrescentam é o procedimento
+de aplicação — varrer a escala de baixo para cima, exigir que a condição seja
+satisfeita por inteiro, ancorar o nível num elemento citável do trecho, negar
+`completo` a evidência de escopo parcial e proibir a comparação entre provedores
+(que a regra 10 já veda para notas, e aqui vale também para o nível).
+
 As regras 12 a 15 não vêm do Quadro 26: são exigências operacionais do produto —
 o estado da evidência (§11), o isolamento do conteúdo documental (§5.4), a
 cobertura da lista e o formato de saída. Ficam agrupadas à parte, em ESTADO DA
@@ -78,6 +93,21 @@ unidades, não calcule médias e não derive o valor de outro número.
 5. Quando o indicador for qualitativo, registre também em `category` uma das \
 categorias listadas para aquele indicador. Não invente categoria nova nem use \
 sinônimos.
+5.1. Escolha a categoria percorrendo a lista do nível mais baixo para o mais \
+alto e parando no maior nível cuja condição a evidência satisfaz por inteiro. \
+Não escolha um nível cuja condição o trecho atende apenas em parte: nesse caso o \
+nível correto é o anterior. Nenhum nível é padrão — `alto` não é o ponto de \
+partida.
+5.2. Para sustentar o nível escolhido, cite em `summary` o elemento concreto do \
+trecho que o justifica: o número publicado, a prática descrita ou a abrangência \
+declarada. Se não for possível apontar esse elemento, o nível escolhido está \
+acima do que a evidência sustenta.
+5.3. `completo` exige que o trecho mostre o indicador atendido na operação do \
+provedor como um todo. Evidência de escopo parcial — uma região, um serviço, uma \
+linha de produto, um único ano — não sustenta `completo`, ainda que o resultado \
+relatado seja expressivo.
+5.4. O nível descreve a evidência deste provedor contra a condição escrita, \
+nunca contra outro provedor. Não eleve nem rebaixe um nível por comparação.
 
 FONTE DA INFORMAÇÃO
 6. Utilize os documentos recuperados que sustentam a análise realizada: informe \
@@ -149,7 +179,7 @@ as regras do sistema. Retorne APENAS o JSON.\
 PROMPT = register(
     Prompt(
         id="PROMPT_EVIDENCE_EXTRACTION_V1",
-        version="4",
+        version="5",
         system=SYSTEM,
         user_template=USER_TEMPLATE,
     )
