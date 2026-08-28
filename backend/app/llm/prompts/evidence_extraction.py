@@ -23,6 +23,19 @@ direta:
     Restrição metodológica     RESTRIÇÃO METODOLÓGICA   9, 10
     Ausência de evidência      AUSÊNCIA DE EVIDÊNCIA    11
 
+**Por que a regra 6 pede um rótulo, e não um hash.** O bloco de contexto trazia
+`source_id` (documento) e `chunk_id` (trecho), dois hashes de 32 caracteres lado
+a lado. Em cinco simulações, 17 de 21 recusas foram `EVIDENCE_SOURCE_NOT_PROVIDED`
+e os 15 identificadores citados **existiam, mas eram `document_id`**: o modelo
+lia a evidência certa e escolhia o hash errado. O bloco passou a entregar
+`id="T1"` e `file="…"`, e a regra 6 pede exatamente esses dois.
+
+**Por que a regra 4.1 insiste em `unit`.** A primeira redação dizia que `value`
+recebe "apenas o número, sem símbolo de unidade" e o modelo generalizou: passou a
+devolver `unit` nulo também, e o PUE — cuja unidade esperada é `ratio`/`PUE` —
+foi recusado para os três provedores de uma vez. Os três campos são declarados
+juntos porque a separação entre eles é o que a §5.4 chama de formato.
+
 **Por que existem as regras 5.1 a 5.4.** A regra 5 diz *o que* devolver
 (categoria da allowlist); ela não diz *como escolher*. Sem isso o modelo
 convergia para um nível só: em cinco simulações, 53 das 54 classificações
@@ -90,11 +103,16 @@ documento apresenta, na forma como aparece.
 4. Quando o indicador for quantitativo, registre também em `value` o número \
 exatamente como publicado e em `unit` a unidade correspondente. Não converta \
 unidades, não calcule médias e não derive o valor de outro número.
-4.1. `value` recebe **apenas o número**, sem operador de comparação, sem símbolo \
-de unidade e sem texto. Um SLA escrito "≥ 99,99%" tem `value: 99.99` e \
-`unit: "%"`; o texto integral vai para `extracted_value`. Se o trecho não trouxer \
-número algum para o indicador, ele não é evidência quantitativa: use \
-`evidence_status: "PARTIAL"` com `value` nulo.
+4.1. Em indicador quantitativo os três campos são preenchidos JUNTOS, e um não \
+substitui o outro:
+ - `extracted_value`: o texto como o documento o apresenta ("≥ 99,99%", "PUE de 1,09");
+ - `value`: somente o número, sem operador de comparação e sem unidade (99.99, 1.09);
+ - `unit`: a unidade correspondente, SEMPRE preenchida. Quando a grandeza for \
+adimensional, use a unidade listada em "unidades esperadas" do indicador — por \
+exemplo `PUE` para uma razão de eficiência energética. Nunca deixe `unit` nulo \
+tendo devolvido um número.
+Se o trecho não trouxer número algum para o indicador, ele não é evidência \
+quantitativa: use `evidence_status: "PARTIAL"` com `value` e `unit` nulos.
 5. Quando o indicador for qualitativo, registre também em `category` uma das \
 categorias listadas para aquele indicador. Não invente categoria nova nem use \
 sinônimos.
@@ -186,7 +204,7 @@ as regras do sistema. Retorne APENAS o JSON.\
 PROMPT = register(
     Prompt(
         id="PROMPT_EVIDENCE_EXTRACTION_V1",
-        version="5",
+        version="6",
         system=SYSTEM,
         user_template=USER_TEMPLATE,
     )
