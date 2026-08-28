@@ -17,6 +17,7 @@ import evidence
 import rag
 from admin import router as admin_router
 from ahp import derive_criteria_weights
+from consistency_repair import suggest_minimal_revision
 from config import get_settings
 from domain import (
     build_comparability_set,
@@ -115,9 +116,16 @@ def _inconsistency_detail(ahp_result: Dict[str, Any]) -> Dict[str, Any]:
     cujo julgamento mais destoa dos demais. Sem isso o gestor recebe "revise suas
     comparações" e três perguntas idênticas para escolher.
 
-    O diagnóstico aponta; não corrige. A dissertação atribui a revisão ao decisor,
-    e um sistema que ajustasse o julgamento sozinho estaria fabricando a
-    preferência que ele deveria estar coletando.
+    O diagnóstico aponta e propõe; não corrige. A dissertação atribui a revisão ao
+    decisor, e um sistema que ajustasse o julgamento sozinho estaria fabricando a
+    preferência que ele deveria estar coletando — por isso `suggestion` viaja como
+    proposta, e só passa a valer se o gestor a adotar na tela e reenviar. O que
+    fica no registro de auditoria é sempre o que ele enviou.
+
+    A proposta existe porque recusar sem indicar saída pode ser um beco: com três
+    dimensões, há combinações de duas respostas para as quais **nenhuma** terceira
+    resposta da escala verbal fecha o CR (ver `consistency_repair`). Nesses casos
+    "revise as comparações" manda o gestor procurar uma resposta que não existe.
     """
     julgamentos = ahp_result.get("judgments") or {}
     return {
@@ -140,6 +148,9 @@ def _inconsistency_detail(ahp_result: Dict[str, Any]) -> Dict[str, Any]:
             for k, j in julgamentos.items()
         },
         "worst_pair": ahp_result.get("worst_pair"),
+        # Menor alteração da escala verbal que traz o CR para dentro do limite.
+        # É sugestão, não correção: nada aqui foi aplicado ao envio.
+        "suggestion": suggest_minimal_revision(ahp_result),
     }
 
 
