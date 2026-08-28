@@ -62,6 +62,14 @@ const fmt3 = (v: unknown) => Number(v).toFixed(3);
 const fmtPct = (v: unknown) => `${(Number(v) * 100).toFixed(0)}%`;
 
 const MEDALS = ["🥇", "🥈", "🥉"];
+
+// A medalha vem da **posição calculada**, não da ordem da lista. Com `show_tie`
+// o backend dá a mesma posição a pontuações iguais, e indexar pelo array
+// transformava três primeiros lugares em 🥇🥈🥉 — um desempate que ninguém
+// calculou, que é exatamente o que a §12 proíbe.
+function medalFor(rank: number): string | null {
+  return MEDALS[rank - 1] ?? null;
+}
 export default function Report({
   result,
   answers,
@@ -108,6 +116,10 @@ export default function Report({
   const maxScore = Math.max(...ranking.map((r) => r.score));
   const scoreAxisMax = Math.min(1, Math.ceil(maxScore * 12) / 10);
   const top = ranking[0];
+  // Quem dividiu o primeiro lugar. Anunciar "provedor recomendado" com três
+  // empatados apresentaria como escolha o que o cálculo não decidiu.
+  const topTied = ranking.filter((r) => r.rank === top.rank);
+  const hasTopTie = topTied.length > 1;
   const topCriterion = Object.entries(cw).sort((a, b) => b[1] - a[1])[0]?.[0];
   const providerName = (id: string) => ranking.find((r) => r.id === id)?.name || id;
   const providersWithoutEvidence = Object.entries(evidences)
@@ -122,9 +134,13 @@ export default function Report({
   }));
   const critCols = Object.keys(CRITERIA_LABELS).filter((c) => providerScores.some((p) => c in p));
   const comparisonData = critCols.map((c) => {
-    const row: Record<string, string | number> = { criterio: CRITERIA_LABELS[c] };
+    // Ausência de desempenho medido fica `null`, não `0` (§11): zero afirmaria
+    // "o provedor não atende", que é justamente o que não se sabe. O Recharts
+    // omite a barra em vez de desenhá-la no chão.
+    const row: Record<string, string | number | null> = { criterio: CRITERIA_LABELS[c] };
     providerScores.forEach((p) => {
-      row[p.name] = (p[c] as number) ?? 0;
+      const valor = p[c];
+      row[p.name] = typeof valor === "number" ? valor : null;
     });
     return row;
   });
@@ -158,12 +174,22 @@ export default function Report({
               (preliminary ? "text-amber-100" : "text-blue-100")
             }
           >
-            {preliminary ? "1º lugar (resultado preliminar)" : "Provedor recomendado"}
+            {hasTopTie
+              ? `Empate em 1º lugar (${topTied.length} provedores)`
+              : preliminary
+                ? "1º lugar (resultado preliminar)"
+                : "Provedor recomendado"}
           </div>
           <div className="mt-1 flex items-center gap-2 text-2xl font-extrabold">
-            <span aria-hidden>{preliminary ? "⚠️" : "🏆"}</span>
-            {top.name}
+            <span aria-hidden>{hasTopTie ? "🤝" : preliminary ? "⚠️" : "🏆"}</span>
+            {hasTopTie ? topTied.map((r) => r.name).join(" · ") : top.name}
           </div>
+          {hasTopTie && (
+            <div className="mt-1 text-[11px] leading-snug text-blue-100">
+              Os indicadores com evidência comparável não separaram estes provedores. A ordem
+              exibida abaixo não é uma classificação — não há desempate calculado.
+            </div>
+          )}
           {preliminary && (
             <div className="mt-1 text-[11px] leading-snug text-amber-100">
               Não é uma recomendação definitiva: o RC das suas comparações está acima de{" "}
@@ -171,10 +197,16 @@ export default function Report({
             </div>
           )}
         </div>
+        {/*
+          O número é a pontuação da Equação 5 — Σ (peso efetivo × desempenho
+          normalizado) —, per-provedor e em [0,1]. Não é a prioridade do
+          autovetor e não soma 1 entre os provedores: cada um é medido contra o
+          melhor valor de cada indicador, então vários podem chegar a 1,000.
+        */}
         <MetricCard
-          label="Prioridade AHP"
+          label="Pontuação final"
           value={top.score.toFixed(3)}
-          hint="As prioridades somam 1 entre os provedores"
+          hint="Σ (peso do indicador × desempenho normalizado) · 1,000 = melhor em todos os indicadores comparáveis"
         />
         <MetricCard
           label="Critério mais priorizado"
@@ -237,9 +269,16 @@ export default function Report({
                   aria-hidden
                 />
                 <span className="w-7 text-center text-lg" aria-hidden>
-                  {MEDALS[i] || <span className="text-sm font-bold text-slate-400">{r.rank}º</span>}
+                  {medalFor(r.rank) || (
+                    <span className="text-sm font-bold text-slate-400">{r.rank}º</span>
+                  )}
                 </span>
                 <span className="font-semibold text-slate-900">{r.name}</span>
+                {r.tied && (
+                  <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                    empate em {r.rank}º
+                  </span>
+                )}
                 <span className="ml-auto rounded-lg bg-slate-900 px-2.5 py-1 font-mono text-xs font-semibold text-white">
                   {r.score.toFixed(3)}
                 </span>

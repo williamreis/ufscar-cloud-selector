@@ -218,6 +218,57 @@ def test_partial_fica_fora_do_conjunto_comparavel(disponibilidade, metodologia):
     assert finding.to_performance().is_usable is False
 
 
+def test_partial_sem_valor_e_resposta_valida_e_nao_violacao(disponibilidade, metodologia):
+    """
+    A regra 12 do prompt manda usar PARTIAL **sem valor** para meta futura ou
+    recorte parcial. Tratar isso como INVALID acusaria o modelo de violar a
+    regra que ele cumpriu — e enchia o log de guardrail de rejeição falsa.
+    """
+    log = GuardrailLog()
+    bruto = _bruto(
+        evidence_status="PARTIAL",
+        value=None,
+        unit=None,
+        summary="Compromisso de 100% de energia renovável até 2025.",
+    )
+    finding = _validar(bruto, disponibilidade, metodologia, log=log)
+
+    assert finding.status == STATUS_PARTIAL
+    assert finding.value is None
+    assert finding.rejection is None
+    assert log.as_dicts() == []
+    # A fonte fica: o relatório precisa mostrar em que trecho o modelo se apoiou.
+    assert finding.source_chunk_id == "chunk-1"
+
+
+def test_qualitativo_partial_sem_categoria_nao_e_recusado(certificacoes, metodologia):
+    log = GuardrailLog()
+    bruto = _bruto(
+        indicator_id=certificacoes.id,
+        evidence_status="PARTIAL",
+        nature="qualitative",
+        value=None,
+        unit=None,
+        category=None,
+        summary="O documento cita auditorias, sem dizer quais certificações.",
+    )
+    finding = _validar(bruto, certificacoes, metodologia, log=log)
+
+    assert finding.status == STATUS_PARTIAL
+    assert finding.category is None
+    assert log.as_dicts() == []
+
+
+def test_quantitativo_sem_valor_declarado_found_continua_invalido(
+    disponibilidade, metodologia
+):
+    """A tolerância acima é do PARTIAL. Dizer FOUND sem número segue fora das regras."""
+    log = GuardrailLog()
+    finding = _validar(_bruto(value=None), disponibilidade, metodologia, log=log)
+    assert finding.status == STATUS_INVALID
+    assert any(e["rule_id"] == "EVIDENCE_MISSING_VALUE" for e in log.as_dicts())
+
+
 # --- Unidade conforme o indicador (§5.4 e Quadro 22) ------------------------
 
 
@@ -227,40 +278,71 @@ def test_unidade_fora_das_esperadas_e_recusada(metodologia):
     sejam incorporadas ao processo de avaliação". A unidade é parte do formato.
     """
     log = GuardrailLog()
-    carbono = metodologia.by_id("sustainability_carbon_emissions")
+    # A eficiência energética é o veículo do teste porque continua quantitativa
+    # com lista de unidades (ratio, PUE). O carbono servia aqui antes de virar
+    # qualitativo — e um indicador sem `expected_units` aceita qualquer unidade,
+    # então o teste passaria sem exercer a regra.
+    eficiencia = metodologia.by_id("sustainability_energy_efficiency")
     bruto = _bruto(
-        indicator_id="sustainability_carbon_emissions",
+        indicator_id="sustainability_energy_efficiency",
         value=12000.0,
         unit="tCO2e",
     )
-    finding = _validar(bruto, carbono, metodologia, log=log)
+    finding = _validar(bruto, eficiencia, metodologia, log=log)
 
     assert finding.status == STATUS_INVALID
     assert any(e["rule_id"] == "EVIDENCE_UNEXPECTED_UNIT" for e in log.as_dicts())
 
 
-def test_emissao_absoluta_nao_entra_como_intensidade(metodologia):
+def test_carbono_e_qualitativo_com_rubrica(metodologia):
     """
-    O caso concreto: o Quadro 22 define o CUE como emissão dividida pela energia
-    dos equipamentos. Um total em tCO2e passa pela normalização por minimização
-    sem erro e faz o provedor maior perder por ser maior.
+    O carbono é avaliado pela rubrica do Quadro 23, não pela razão do Quadro 22.
+
+    A troca é a decisão registrada em `_decisao` no indicators.json: exigir
+    intensidade (gCO2e/kWh) mantinha o indicador correto no papel e inútil na
+    prática — nenhum relatório dos provedores publica essa razão, então ele saía
+    do conjunto comparável em toda avaliação. O que este teste protege é que a
+    troca seja completa: sobrar `expected_units` faria a validação quantitativa
+    continuar rodando sobre um indicador que já não produz valor.
     """
     carbono = metodologia.by_id("sustainability_carbon_emissions")
-    assert "tCO2e" not in carbono.expected_units
-    assert all("/" in u for u in carbono.expected_units), (
-        "as unidades do CUE são de intensidade (massa por energia), não de total"
+    assert carbono.data_type == "qualitative"
+    assert carbono.rubric is not None
+    assert not carbono.expected_units
+
+
+def test_emissao_absoluta_nao_vira_nota(metodologia):
+    """
+    A razão pela qual o total absoluto nunca entrou continua valendo: comparar
+    tCO2e entre provedores puniria o maior por ser maior. Antes isso era barrado
+    pela lista de unidades; agora é estrutural — sendo qualitativo, o indicador
+    só aceita categoria, e um `value` numérico não tem por onde entrar.
+    """
+    log = GuardrailLog()
+    carbono = metodologia.by_id("sustainability_carbon_emissions")
+    bruto = _bruto(
+        indicator_id="sustainability_carbon_emissions",
+        nature="quantitative",
+        value=12000.0,
+        unit="tCO2e",
+        category=None,
     )
+    finding = _validar(bruto, carbono, metodologia, log=log)
+
+    assert finding.status == STATUS_INVALID
+    assert finding.value is None
 
 
 @pytest.mark.parametrize(
-    "unidade,aceita",
-    [("gCO2e/kWh", True), ("kgCO2e/kWh", True), ("tCO2e", False), ("%", False)],
+    "categoria,valor",
+    [("alto", 0.75), ("completo", 1.0), ("nao_identificado", None)],
 )
-def test_unidades_do_carbono(metodologia, unidade, aceita):
-    from evidence import _unit_is_expected
+def test_categorias_do_carbono_seguem_a_rubrica(metodologia, categoria, valor):
+    """Os níveis do Quadro 23 valem para o carbono como valem para os demais qualitativos."""
+    from domain.normalization import value_from_category
 
     carbono = metodologia.by_id("sustainability_carbon_emissions")
-    assert _unit_is_expected(unidade, carbono) is aceita
+    assert value_from_category(carbono, categoria)[0] == valor
 
 
 def test_sinonimo_de_unidade_e_aceito(metodologia):
@@ -564,7 +646,10 @@ def test_prompt_leva_os_termos_do_quadro_27(disponibilidade):
 def test_prompt_de_extracao_esta_registrado():
     from llm.prompts import registered_versions
 
-    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "3"
+    # v4: acrescentou ESTADO DA EVIDÊNCIA (regra 12). A versão entra no registro
+    # de cada execução (§27), então mudar o texto sem mudar o número apagaria a
+    # diferença entre duas avaliações feitas com prompts diferentes.
+    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "4"
 
 
 # Instruções operacionais do Quadro 26, na ordem das linhas do quadro. O texto é
@@ -628,6 +713,23 @@ def test_prompt_reproduz_o_quadro_26(componente, instrucao):
 
     system = " ".join(get_prompt("PROMPT_EVIDENCE_EXTRACTION_V1").system.split())
     assert " ".join(instrucao.split()) in system, f"Quadro 26 → {componente} não está no prompt"
+
+
+def test_prompt_define_quando_o_estado_e_found(disponibilidade):
+    """
+    A falha que motivou a regra 12: sem definição de `FOUND`, o modelo devolvia
+    `PARTIAL` para extração completa (PUE de 1,15 com o trecho na mão), e
+    `PARTIAL` fica fora do conjunto comparável — relatório inteiro de zeros com
+    os valores corretos extraídos e descartados.
+    """
+    from llm.prompts import get as get_prompt
+
+    system = " ".join(get_prompt("PROMPT_EVIDENCE_EXTRACTION_V1").system.split())
+    assert "ESTADO DA EVIDÊNCIA" in system
+    assert 'Use `evidence_status: "FOUND"` quando o trecho apresentar' in system
+    # PARTIAL sem valor: é o que impede uma meta futura de entrar como valor.
+    assert "meta ou compromisso futuro" in system
+    assert 'Não devolva `"PARTIAL"` com `value` ou `category` preenchidos' in system
 
 
 def test_prompt_declara_as_secoes_do_quadro_26():
