@@ -85,6 +85,13 @@ def _bruto(**kwargs):
 
 
 def _validar(bruto, indicator, metodologia, chunks=("chunk-1",), log=None):
+    # `chunks` são os chunk_id entregues. O mapa reproduz o que o produtor monta:
+    # o rótulo curto do bloco (T1, T2…) e o próprio chunk_id resolvem para o
+    # chunk_id real.
+    fontes = {}
+    for indice, real in enumerate(chunks):
+        fontes[f"T{indice + 1}"] = real
+        fontes[real] = real
     # `log is not None`, e não `log or ...`: GuardrailLog define __len__, então
     # um log vazio é falsy e o atalho criaria um segundo log, engolindo os
     # eventos que o teste veio conferir.
@@ -92,7 +99,7 @@ def _validar(bruto, indicator, metodologia, chunks=("chunk-1",), log=None):
         bruto,
         indicator,
         "aws",
-        list(chunks),
+        fontes,
         metodologia,
         log if log is not None else GuardrailLog(),
     )
@@ -343,6 +350,97 @@ def test_categorias_do_carbono_seguem_a_rubrica(metodologia, categoria, valor):
 
     carbono = metodologia.by_id("sustainability_carbon_emissions")
     assert value_from_category(carbono, categoria)[0] == valor
+
+
+@pytest.mark.parametrize(
+    "texto,esperado",
+    [
+        (">= 99.99%", 99.99),
+        ("≥ 99,99%", 99.99),
+        ("no mínimo 99,9%", 99.9),
+        ("at least 99.95 percent", 99.95),  # "percent" por extenso é sufixo aceito
+        ("99.99%", 99.99),
+        ("1.09 PUE", 1.09),
+        ("1-minute intervals", None),
+        ("entre 10 e 50 ms", None),
+        ("Uptime Percentage", None),
+        (None, None),
+    ],
+)
+def test_numero_com_comparador_e_lido_sem_inferencia(texto, esperado):
+    """
+    O operador é formato, não valor: removê-lo devolve o mesmo número que está
+    escrito. Faixa, texto sem número e período de amostragem continuam fora,
+    porque ali não há um valor único a comparar.
+    """
+    from evidence import numero_do_texto
+
+    assert numero_do_texto(texto) == esperado
+
+
+def test_sla_com_operador_vira_evidencia_valida(metodologia):
+    """
+    O caso concreto: o SLA do Compute Engine publica "≥ 99.99%", o modelo devolvia
+    `value` nulo com o texto em `extracted_value`, e a validação recusava por
+    "sem valor numérico" — derrubando `performance_availability` para todos os
+    provedores por falta de par comparável.
+    """
+    log = GuardrailLog()
+    disponibilidade = metodologia.by_id("performance_availability")
+    bruto = _bruto(
+        indicator_id="performance_availability",
+        value=None,
+        unit="%",
+        extracted_value="≥ 99.99%",
+    )
+    finding = _validar(bruto, disponibilidade, metodologia, log=log)
+
+    assert finding.status == STATUS_FOUND
+    assert finding.value == pytest.approx(99.99)
+    assert any(e["rule_id"] == "EVIDENCE_VALUE_RECOVERED_FROM_TEXT" for e in log.as_dicts())
+
+
+def test_texto_sem_numero_continua_recusado(metodologia):
+    """A recuperação não pode virar porta dos fundos para evidência sem valor."""
+    disponibilidade = metodologia.by_id("performance_availability")
+    bruto = _bruto(
+        indicator_id="performance_availability",
+        value=None,
+        unit="%",
+        extracted_value="Uptime Percentage",
+    )
+    assert _validar(bruto, disponibilidade, metodologia).status == STATUS_INVALID
+
+
+def test_rotulo_do_bloco_resolve_para_o_chunk_real(metodologia):
+    """
+    O modelo devolve `T1`; o que fica gravado é o `chunk_id` verdadeiro. O rótulo
+    é endereço dentro de uma chamada, não identidade do trecho — a auditoria
+    precisa apontar o trecho, não a posição dele no prompt.
+    """
+    disponibilidade = metodologia.by_id("performance_availability")
+    bruto = _bruto(indicator_id="performance_availability", source_chunk_id="T2")
+    finding = _validar(
+        bruto, disponibilidade, metodologia, chunks=("chunk-alpha", "chunk-beta")
+    )
+    assert finding.status == STATUS_FOUND
+    assert finding.source_chunk_id == "chunk-beta"
+
+
+def test_document_id_citado_como_trecho_e_recusado(metodologia):
+    """
+    A recusa que motivou a mudança do bloco continua valendo: citar o
+    identificador do documento no lugar do trecho não passa.
+    """
+    log = GuardrailLog()
+    disponibilidade = metodologia.by_id("performance_availability")
+    bruto = _bruto(
+        indicator_id="performance_availability",
+        source_chunk_id="07ef245377a4e02ef49cf5a17cee03f9",
+    )
+    finding = _validar(bruto, disponibilidade, metodologia, chunks=("chunk-1",), log=log)
+    assert finding.status == STATUS_INVALID
+    assert any(e["rule_id"] == "EVIDENCE_SOURCE_NOT_PROVIDED" for e in log.as_dicts())
 
 
 def test_sinonimo_de_unidade_e_aceito(metodologia):

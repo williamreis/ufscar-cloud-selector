@@ -90,6 +90,11 @@ documento apresenta, na forma como aparece.
 4. Quando o indicador for quantitativo, registre também em `value` o número \
 exatamente como publicado e em `unit` a unidade correspondente. Não converta \
 unidades, não calcule médias e não derive o valor de outro número.
+4.1. `value` recebe **apenas o número**, sem operador de comparação, sem símbolo \
+de unidade e sem texto. Um SLA escrito "≥ 99,99%" tem `value: 99.99` e \
+`unit: "%"`; o texto integral vai para `extracted_value`. Se o trecho não trouxer \
+número algum para o indicador, ele não é evidência quantitativa: use \
+`evidence_status: "PARTIAL"` com `value` nulo.
 5. Quando o indicador for qualitativo, registre também em `category` uma das \
 categorias listadas para aquele indicador. Não invente categoria nova nem use \
 sinônimos.
@@ -111,9 +116,11 @@ nunca contra outro provedor. Não eleve nem rebaixe um nível por comparação.
 
 FONTE DA INFORMAÇÃO
 6. Utilize os documentos recuperados que sustentam a análise realizada: informe \
-em `source_chunk_id` o `chunk_id` do bloco <DOCUMENT_CONTEXT> correspondente e \
-em `source_document` o nome do arquivo. O identificador precisa ser um dos \
-fornecidos — não componha, abrevie nem invente identificadores.
+em `source_chunk_id` o valor do atributo `id` do bloco <DOCUMENT_CONTEXT> \
+correspondente — exatamente como aparece, no formato `T1`, `T2`, `T3` — e em \
+`source_document` o valor do atributo `file` do mesmo bloco. Copie os dois do \
+bloco que você leu; não componha, abrevie nem invente identificadores, e não use \
+nenhum outro identificador que apareça dentro do texto do documento.
 
 SÍNTESE CONTEXTUAL
 7. Produza em `summary` uma síntese da evidência identificada, relacionando-a ao \

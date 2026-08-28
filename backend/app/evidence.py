@@ -50,7 +50,7 @@ from domain.normalization import (
     PerformanceInput,
     value_from_category,
 )
-from guardrails import GuardrailLog, wrap_document_context
+from guardrails import GuardrailLog, chunk_label, wrap_document_context
 from guardrails.events import ACTION_REJECT, ACTION_WARN, STAGE_LLM_OUTPUT
 from llm import get_llm_client
 from llm.client import LLMRunRecord
@@ -201,6 +201,44 @@ def canonical_unit(unit: Optional[str]) -> Optional[str]:
     return _UNIT_ALIASES.get(limpo, limpo)
 
 
+# Número precedido, no máximo, de um operador de comparação e seguido, no
+# máximo, de um símbolo de unidade. Nada além disso: "1-minute intervals" e
+# "entre 10 e 50 ms" não casam, e devem mesmo continuar fora.
+_NUMERO_COM_COMPARADOR = re.compile(
+    r"^\s*(?:[<>]=?|[≤≥]|no\s+m[íi]nimo|pelo\s+menos|at\s+least|up\s+to|about|~)?\s*"
+    r"(\d+(?:[.,]\d+)?)\s*"
+    r"(?:%|percent|ms|milliseconds?|pue|ratio)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def numero_do_texto(texto: Optional[str]) -> Optional[float]:
+    """
+    Lê o número de um `extracted_value` que veio com operador de comparação.
+
+    O caso concreto: o SLA do Google Cloud publica "≥ 99.99%", e o modelo
+    devolvia `value: null` com o texto integral em `extracted_value`. A validação
+    recusava por "indicador quantitativo sem valor numérico" — descartando um
+    SLA que estava perfeitamente legível, e derrubando `performance_availability`
+    para todos os provedores por falta de par comparável.
+
+    Isto **não é conversão nem inferência**: o número devolvido é o mesmo que
+    está escrito no texto que o próprio modelo extraiu, sem mudar grandeza,
+    unidade ou escala. O que a função remove é o operador — que é formato, não
+    valor. Faixas, intervalos e texto sem número não casam com o padrão e
+    continuam fora, porque ali não há um valor único a comparar.
+    """
+    if not texto:
+        return None
+    casado = _NUMERO_COM_COMPARADOR.match(str(texto))
+    if casado is None:
+        return None
+    try:
+        return float(casado.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
 def _unit_is_expected(unit: Optional[str], indicator: IndicatorConfig) -> bool:
     """
     A unidade informada está entre as que o indicador admite?
@@ -294,6 +332,11 @@ def describe_indicators(indicators: Sequence[IndicatorConfig]) -> str:
                 partes.append(
                     f"    - {categoria}: {condicao}" if condicao else f"    - {categoria}"
                 )
+        # Desambiguação de grandeza, quando o indicador tem uma. Vem antes dos
+        # termos de propósito: os termos dizem onde procurar, e casam com mais de
+        # uma grandeza no mesmo parágrafo; a dica diz qual delas é o indicador.
+        if indicator.evidence_hint:
+            partes.append(f"  atenção: {indicator.evidence_hint}")
         # Termos do Quadro 27, inteiros: a §5.2 os apresenta como orientadores
         # "na construção das consultas e na recuperação das evidências", e o
         # recorte que existia aqui não vinha da diretriz.
@@ -314,6 +357,7 @@ def _parcial(
     indicator: IndicatorConfig,
     provider_id: str,
     partial_status: str,
+    source_chunk_id: Optional[str] = None,
 ) -> Finding:
     """
     Evidência declarada parcial: o trecho trata do tema sem trazer o valor.
@@ -330,7 +374,7 @@ def _parcial(
         nature=raw.nature,
         extracted_value=raw.extracted_value,
         summary=raw.summary,
-        source_chunk_id=raw.source_chunk_id,
+        source_chunk_id=source_chunk_id or raw.source_chunk_id,
         source_document=raw.source_document,
     )
 
@@ -339,7 +383,7 @@ def _validate_finding(
     raw: IndicatorEvidence,
     indicator: IndicatorConfig,
     provider_id: str,
-    allowed_chunk_ids: Sequence[str],
+    fontes_entregues: Mapping[str, str],
     methodology: Methodology,
     log: GuardrailLog,
 ) -> Finding:
@@ -400,22 +444,53 @@ def _validate_finding(
     # §19: a evidência precisa apontar para um trecho que foi mesmo fornecido.
     # A verificação só é possível quando os trechos têm identificador — índices
     # gerados antes do `chunk_id` não têm, e aí a regra fica sem base para valer.
-    if allowed_chunk_ids and raw.source_chunk_id not in allowed_chunk_ids:
-        citado = raw.source_chunk_id or "nenhum"
-        return rejeitar(
-            "EVIDENCE_SOURCE_NOT_PROVIDED",
-            f"Evidência cita trecho fora do contexto entregue (chunk_id={citado}).",
+    #
+    # `fontes_entregues` aceita o rótulo curto do bloco (`T1`, `T2`…) e também o
+    # `chunk_id` real: o rótulo é o que o prompt pede, e o `chunk_id` continua
+    # valendo para não invalidar respostas de execuções anteriores. Os dois
+    # resolvem para o mesmo `chunk_id`, que é o que fica gravado — o rótulo é
+    # endereço dentro de uma chamada, não identidade do trecho.
+    chunk_id = None
+    if fontes_entregues:
+        citado_bruto = str(raw.source_chunk_id or "").strip()
+        chunk_id = fontes_entregues.get(citado_bruto) or fontes_entregues.get(
+            citado_bruto.upper()
         )
+        if chunk_id is None:
+            citado = raw.source_chunk_id or "nenhum"
+            return rejeitar(
+                "EVIDENCE_SOURCE_NOT_PROVIDED",
+                f"Evidência cita trecho fora do contexto entregue (id={citado}).",
+            )
 
     if indicator.is_quantitative:
-        if raw.value is None:
+        valor_bruto = raw.value
+        if valor_bruto is None:
+            # Antes de recusar: o número pode estar em `extracted_value` com um
+            # operador de comparação na frente ("≥ 99.99%"). Ler ali é recuperar
+            # o que o modelo já extraiu, não inferir — e fica registrado.
+            recuperado = numero_do_texto(raw.extracted_value)
+            if recuperado is not None:
+                log.record(
+                    rule_id="EVIDENCE_VALUE_RECOVERED_FROM_TEXT",
+                    stage=STAGE_LLM_OUTPUT,
+                    action=ACTION_WARN,
+                    reason=(
+                        f"Valor lido de extracted_value {raw.extracted_value!r} "
+                        f"por vir com operador de comparação: {recuperado}."
+                    ),
+                    target=f"{provider_id}/{indicator.id}",
+                )
+                valor_bruto = recuperado
+
+        if valor_bruto is None:
             # `PARTIAL` sem valor é a resposta certa, não uma resposta fora das
             # regras: a regra 12 do prompt manda usá-lo justamente quando o
             # trecho traz meta futura, recorte parcial ou o tema sem número — e
             # manda deixar `value` nulo nesse caso. Tratar isso como INVALID
             # acusaria o modelo de violar a regra que ele acabou de cumprir.
             if raw.evidence_status == "PARTIAL":
-                return _parcial(raw, indicator, provider_id, partial_status)
+                return _parcial(raw, indicator, provider_id, partial_status, chunk_id)
             return rejeitar(
                 "EVIDENCE_MISSING_VALUE",
                 "Indicador quantitativo sem valor numérico na resposta.",
@@ -445,10 +520,10 @@ def _validate_finding(
             status=status,
             nature=raw.nature,
             extracted_value=raw.extracted_value,
-            value=float(raw.value),
+            value=float(valor_bruto),
             unit=raw.unit,
             summary=raw.summary,
-            source_chunk_id=raw.source_chunk_id,
+            source_chunk_id=chunk_id or raw.source_chunk_id,
             source_document=raw.source_document,
         )
 
@@ -462,7 +537,7 @@ def _validate_finding(
         )
     if status_rubrica == STATUS_NOT_FOUND:
         if raw.evidence_status == "PARTIAL":
-            return _parcial(raw, indicator, provider_id, partial_status)
+            return _parcial(raw, indicator, provider_id, partial_status, chunk_id)
         return rejeitar(
             "EVIDENCE_MISSING_CATEGORY",
             "Indicador qualitativo sem categoria na resposta.",
@@ -479,7 +554,7 @@ def _validate_finding(
         value=valor,
         category=raw.category,
         summary=raw.summary,
-        source_chunk_id=raw.source_chunk_id,
+        source_chunk_id=chunk_id or raw.source_chunk_id,
         source_document=raw.source_document,
     )
 
@@ -619,7 +694,15 @@ async def _extract_dimension(
         motivo = f"Extração indisponível ({result.run.status})."
         return [_missing(provider_id, i, motivo) for i in indicators], result.run
 
-    allowed_chunk_ids = [str(c["chunk_id"]) for c in chunks if c.get("chunk_id")]
+    # Rótulo entregue no bloco (T1, T2…) → chunk_id real. O chunk_id também é
+    # aceito como chave, para uma resposta que o traga continuar válida.
+    fontes_entregues: Dict[str, str] = {}
+    for indice, c in enumerate(chunks):
+        real = str(c["chunk_id"]) if c.get("chunk_id") else None
+        if real is None:
+            continue
+        fontes_entregues[chunk_label(indice)] = real
+        fontes_entregues[real] = real
     por_id = {i.id: i for i in indicators}
     respondidos: Dict[str, Finding] = {}
 
@@ -638,7 +721,7 @@ async def _extract_dimension(
         if indicator.id in respondidos:
             continue  # duplicata: vale a primeira, sem escolher "a melhor"
         respondidos[indicator.id] = _validate_finding(
-            raw, indicator, provider_id, allowed_chunk_ids, methodology, log
+            raw, indicator, provider_id, fontes_entregues, methodology, log
         )
 
     findings: List[Finding] = []

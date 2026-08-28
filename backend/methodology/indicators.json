@@ -38,6 +38,7 @@
       "name": "Eficiência energética dos data centers",
       "question_id": "sust_q1",
       "data_type": "quantitative",
+      "evidence_hint": "é o PUE médio anual da frota de data centers, como razão (ex.: 1.09). Não use a média da indústria citada como comparação, nem percentual de economia.",
       "direction": "minimize",
       "expected_units": [
         "ratio",
@@ -78,6 +79,7 @@
       "name": "Utilização de fontes de energia renovável",
       "question_id": "sust_q2",
       "data_type": "quantitative",
+      "evidence_hint": "é a PROPORÇÃO do consumo de eletricidade atendida por fontes renováveis, em %. Capacidade contratada ou instalada (GW, MW) NÃO é este indicador, ainda que apareça no mesmo relatório.",
       "direction": "benefit",
       "expected_units": [
         "%",
@@ -202,6 +204,7 @@
       "name": "Disponibilidade dos serviços",
       "question_id": "perf_q1",
       "data_type": "quantitative",
+      "evidence_hint": "é o percentual de disponibilidade mensal garantido pelo SLA (ex.: 99.99). Registre só o número em `value`, sem o operador: '≥ 99,99%' tem value 99.99 e unit '%'.",
       "direction": "benefit",
       "expected_units": [
         "%",
@@ -261,6 +264,7 @@
       "name": "Latência e tempo de resposta",
       "question_id": "perf_q3",
       "data_type": "quantitative",
+      "evidence_hint": "é a latência de rede medida, em milissegundos. Frequência de coleta, janela de medição ou período de amostragem ('intervalos de 1 minuto') NÃO são latência.",
       "direction": "minimize",
       "expected_units": [
         "ms",

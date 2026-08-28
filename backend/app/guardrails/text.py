@@ -100,6 +100,11 @@ def format_qa_pairs(pairs: Iterable[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def chunk_label(index: int) -> str:
+    """Rótulo do trecho na ordem em que foi entregue: T1, T2, T3…"""
+    return f"T{index + 1}"
+
+
 def wrap_document_context(
     chunks: Iterable[Dict[str, Any]],
     log: Optional[GuardrailLog] = None,
@@ -107,14 +112,28 @@ def wrap_document_context(
     """
     Encapsula trechos recuperados conforme a §24.
 
-    Cada trecho carrega `source_id` e `chunk_id` na própria marcação: é o que
-    permite, depois, exigir que toda evidência devolvida pela LLM aponte para um
-    identificador que de fato foi fornecido (§19).
+    Cada trecho carrega um **rótulo curto** (`id="T1"`), o nome do arquivo e a
+    página. É o que permite, depois, exigir que toda evidência devolvida pela LLM
+    aponte para um trecho que de fato foi fornecido (§19).
+
+    **Por que o rótulo curto substituiu o hash.** O bloco trazia dois
+    identificadores hexadecimais de 32 caracteres lado a lado — `source_id`
+    (documento) e `chunk_id` (trecho) —, visualmente indistinguíveis. Medido em
+    cinco simulações: de 21 recusas distintas, 17 eram `EVIDENCE_SOURCE_NOT_PROVIDED`,
+    e **os 15 identificadores citados existiam, mas eram `document_id`**. O modelo
+    lia a evidência corretamente e escolhia o hash errado, e a §19 descartava
+    tudo. Não era alucinação nem documento faltando: era o contexto pedindo para
+    ser confundido.
+
+    O nome do arquivo entra pelo mesmo motivo: a regra 6 do prompt pede
+    `source_document`, e o bloco não trazia arquivo nenhum — o modelo não tinha o
+    que responder ali, e devolvia nulo em toda evidência recusada.
     """
     blocks: List[str] = []
-    for chunk in chunks:
-        source_id = str(chunk.get("source_id") or chunk.get("document_id") or "desconhecido")
-        chunk_id = str(chunk.get("chunk_id") or "desconhecido")
+    for indice, chunk in enumerate(chunks):
+        rotulo = chunk_label(indice)
+        arquivo = str(chunk.get("file_name") or chunk.get("source_name") or "desconhecido")
+        pagina = chunk.get("page")
         raw = str(chunk.get("page_content") or chunk.get("text") or "")
         safe = neutralize_tags(raw, TAG_DOCUMENT_CONTEXT, TAG_USER_CONTEXT)
         if safe != raw and log is not None:
@@ -123,12 +142,13 @@ def wrap_document_context(
                 stage=STAGE_DOCUMENT_CONTEXT,
                 action="MASK",
                 reason="Trecho do documento continha marcação de contexto; delimitador neutralizado.",
-                target=chunk_id,
+                target=str(chunk.get("chunk_id") or rotulo),
             )
+        atributos = f'id="{rotulo}" file="{arquivo}"'
+        if pagina is not None:
+            atributos += f' page="{pagina}"'
         blocks.append(
-            f'<{TAG_DOCUMENT_CONTEXT} source_id="{source_id}" chunk_id="{chunk_id}">\n'
-            f"{safe}\n"
-            f"</{TAG_DOCUMENT_CONTEXT}>"
+            f"<{TAG_DOCUMENT_CONTEXT} {atributos}>\n{safe}\n</{TAG_DOCUMENT_CONTEXT}>"
         )
     return "\n\n".join(blocks)
 

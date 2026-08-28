@@ -85,7 +85,10 @@ def client(tmp_path, monkeypatch):
             """Uma evidência por indicador pedido, lida da própria lista do prompt."""
             texto = str(messages)
             ids = re.findall(r'indicator_id: "([^"]+)"', texto)
-            chunk = re.search(r'chunk_id="([^"]+)"', texto)
+            # O bloco entrega o trecho com rótulo curto (`id="T1"`), e é ele que
+            # a regra 6 do prompt manda devolver. O hash do documento saiu do
+            # contexto justamente porque era confundido com o do trecho.
+            chunk = re.search(r'<DOCUMENT_CONTEXT id="([^"]+)"', texto)
             achados = []
             for indicator_id in ids:
                 quantitativo = "preencha `value`" in texto.split(indicator_id, 1)[1][:200]
