@@ -193,13 +193,56 @@ def test_pares_pergunta_resposta_sao_neutralizados():
     assert "Requisitos?" in formatted
 
 
-def test_document_context_carrega_source_id_e_chunk_id():
+def test_document_context_carrega_rotulo_arquivo_e_pagina():
     """§19 exige poder conferir a evidência contra o trecho realmente entregue."""
     bloco = wrap_document_context(
-        [{"source_id": "doc1", "chunk_id": "chunk9", "page_content": "PUE 1,12"}]
+        [
+            {
+                "source_id": "doc1",
+                "chunk_id": "chunk9",
+                "file_name": "relatorio.pdf",
+                "page": 12,
+                "page_content": "PUE 1,12",
+            }
+        ]
     )
-    assert 'source_id="doc1"' in bloco and 'chunk_id="chunk9"' in bloco
+    assert 'id="T1"' in bloco
+    assert 'file="relatorio.pdf"' in bloco
+    assert 'page="12"' in bloco
     assert "PUE 1,12" in bloco
+
+
+def test_document_context_nao_expoe_hash_confundivel_com_o_trecho():
+    """
+    O bloco trazia `source_id` e `chunk_id`, dois hashes de 32 caracteres lado a
+    lado. Medido em cinco simulações: 17 de 21 recusas eram por citação, e os 15
+    identificadores citados eram `document_id` — o modelo escolhia o hash errado
+    e a evidência, correta, era descartada. O identificador do documento não
+    volta ao bloco.
+    """
+    bloco = wrap_document_context(
+        [
+            {
+                "source_id": "07ef245377a4e02ef49cf5a17cee03f9",
+                "chunk_id": "327e630c741ca3009587f5d4af12d66e",
+                "file_name": "relatorio.pdf",
+                "page_content": "PUE 1,12",
+            }
+        ]
+    )
+    assert "07ef245377a4e02ef49cf5a17cee03f9" not in bloco
+    assert "327e630c741ca3009587f5d4af12d66e" not in bloco
+
+
+def test_rotulos_seguem_a_ordem_de_entrega():
+    bloco = wrap_document_context(
+        [
+            {"chunk_id": "a", "file_name": "x.pdf", "page_content": "primeiro"},
+            {"chunk_id": "b", "file_name": "y.pdf", "page_content": "segundo"},
+        ]
+    )
+    assert bloco.index('id="T1"') < bloco.index('id="T2"')
+    assert 'file="y.pdf"' in bloco
 
 
 def test_marcacao_dentro_do_documento_e_registrada():

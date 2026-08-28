@@ -38,6 +38,7 @@ from guardrails.files import (
 from guardrails.text import (
     TAG_DOCUMENT_CONTEXT,
     TAG_USER_CONTEXT,
+    chunk_label,
     enforce_length,
     format_qa_pairs,
     neutralize_tags,
@@ -60,6 +61,7 @@ __all__ = [
     "GuardrailLog",
     "GuardrailRejection",
     "ValidatedUpload",
+    "chunk_label",
     "enforce_document_quota",
     "enforce_length",
     "format_qa_pairs",

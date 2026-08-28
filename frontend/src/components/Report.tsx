@@ -133,7 +133,19 @@ export default function Report({
   // empatados apresentaria como escolha o que o cálculo não decidiu.
   const topTied = ranking.filter((r) => r.rank === top.rank);
   const hasTopTie = topTied.length > 1;
-  const topCriterion = Object.entries(cw).sort((a, b) => b[1] - a[1])[0]?.[0];
+  // Critérios que dividem o topo. Com `sort` estável e pesos iguais, pegar
+  // apenas o primeiro devolvia a ordem do objeto como se fosse prioridade: quem
+  // marcou indiferença nas três comparações lia de volta que priorizou
+  // sustentabilidade, só por ela ser a primeira dimensão declarada.
+  const criteriaByWeight = Object.entries(cw).sort((a, b) => b[1] - a[1]);
+  const topWeight = criteriaByWeight[0]?.[1];
+  const topCriteria = criteriaByWeight
+    .filter(([, w]) => topWeight !== undefined && Math.abs(w - topWeight) <= 1e-6)
+    .map(([k]) => k);
+  const criteriaTied = topCriteria.length > 1;
+  const allCriteriaTied = criteriaTied && topCriteria.length === criteriaByWeight.length;
+  const criterionLabel = (k: string) =>
+    `${CRITERIA_ICONS[k] || ""} ${CRITERIA_LABELS[k] || k}`.trim();
   const providerName = (id: string) => ranking.find((r) => r.id === id)?.name || id;
   const providersWithoutEvidence = Object.entries(evidences)
     .filter(([, docs]) => docs.length === 0)
@@ -228,17 +240,42 @@ export default function Report({
         {/*
           O número é a pontuação da Equação 5 — Σ (peso efetivo × desempenho
           normalizado) —, per-provedor e em [0,1]. Não é a prioridade do
-          autovetor e não soma 1 entre os provedores: cada um é medido contra o
-          melhor valor de cada indicador, então vários podem chegar a 1,000.
+          autovetor e não soma 1 entre os provedores.
+
+          A régua tem duas metades, porque a normalização é por tipo de
+          indicador: nos quantitativos o desempenho é medido contra o melhor
+          valor observado; nos de rubrica é o próprio nível do Quadro 23. Logo
+          1,000 exige o melhor valor em todos os quantitativos **e** `completo`
+          em todos os qualitativos — e uma avaliação em que todos ficaram em
+          `alto` fecha perto de 0,75, que é o que ela de fato constatou.
         */}
         <MetricCard
           label="Pontuação final"
           value={top.score.toFixed(3)}
-          hint="Σ (peso do indicador × desempenho normalizado) · 1,000 = melhor em todos os indicadores comparáveis"
+          hint="Σ (peso do indicador × desempenho). 1,000 exige o melhor valor em todos os indicadores quantitativos e o nível máximo da rubrica em todos os qualitativos."
         />
         <MetricCard
-          label="Critério mais priorizado"
-          value={`${CRITERIA_ICONS[topCriterion || ""] || ""} ${CRITERIA_LABELS[topCriterion || ""] || "—"}`}
+          label={
+            allCriteriaTied
+              ? "Critérios com o mesmo peso"
+              : criteriaTied
+                ? "Critérios mais priorizados (empate)"
+                : "Critério mais priorizado"
+          }
+          value={
+            allCriteriaTied
+              ? "⚖ Nenhum priorizado"
+              : topCriteria.length
+                ? topCriteria.map(criterionLabel).join(" · ")
+                : "—"
+          }
+          hint={
+            allCriteriaTied
+              ? "As suas comparações par-a-par deram o mesmo peso às três dimensões."
+              : criteriaTied
+                ? "Estas dimensões receberam pesos iguais."
+                : undefined
+          }
         />
       </div>
 
