@@ -646,10 +646,16 @@ def test_prompt_leva_os_termos_do_quadro_27(disponibilidade):
 def test_prompt_de_extracao_esta_registrado():
     from llm.prompts import registered_versions
 
-    # v4: acrescentou ESTADO DA EVIDÊNCIA (regra 12). A versão entra no registro
-    # de cada execução (§27), então mudar o texto sem mudar o número apagaria a
-    # diferença entre duas avaliações feitas com prompts diferentes.
-    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "4"
+    # v4: acrescentou ESTADO DA EVIDÊNCIA (regra 12).
+    # v5: acrescentou as regras 5.1–5.4, de aplicação da rubrica. A medição que
+    # as motivou: 53 de 54 classificações qualitativas saíam `alto`, a rubrica de
+    # quatro níveis operava com um, e os indicadores qualitativos deixavam de
+    # separar os provedores.
+    #
+    # A versão entra no registro de cada execução (§27), então mudar o texto sem
+    # mudar o número apagaria a diferença entre duas avaliações feitas com
+    # prompts diferentes.
+    assert registered_versions()["PROMPT_EVIDENCE_EXTRACTION_V1"] == "5"
 
 
 # Instruções operacionais do Quadro 26, na ordem das linhas do quadro. O texto é
