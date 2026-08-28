@@ -906,28 +906,44 @@ async def extract_performances(
         por_dimensao.setdefault(indicator.dimension, []).append(indicator)
 
     # -- 1. Recuperação, um par (provedor × indicador) por consulta -----------
+    #
+    # As consultas são montadas todas antes e buscadas de uma vez. A §4.4 exige
+    # que a recuperação seja *por indicador*, e continua sendo: são as mesmas 39
+    # consultas, com o mesmo texto e o mesmo filtro por provedor. O que mudou é
+    # que os 39 textos viajam juntos até a API de embeddings — 17,5s de
+    # ida-e-voltas sequenciais viraram 0,44s, sem tocar em nenhum vetor.
     hints = dict(query_hints or {})
+    pares: List[Tuple[Mapping[str, str], IndicatorConfig, Tuple[str, ...]]] = [
+        (provider, indicator, tuple(hints.get(indicator.id, ())))
+        for provider in providers
+        for indicator in indicators
+    ]
+    consultas = [
+        (rag.query_for_indicator(indicator, provider.get("name"), extras), provider["id"])
+        for provider, indicator, extras in pares
+    ]
+    resultados = await run_in_threadpool(
+        rag.search_many, consultas, CHUNKS_PER_INDICATOR, session_id
+    )
+
     chunks_por_par: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
-    for provider in providers:
-        for indicator in indicators:
-            extras = tuple(hints.get(indicator.id, ()))
-            query_text, hits = await run_in_threadpool(
-                _retrieve_for_indicator, indicator, provider, session_id, extras
-            )
-            chunks_por_par[(provider["id"], indicator.id)] = hits
-            resultado.rag_audit.append(
-                {
-                    "dimension": indicator.dimension,
-                    "indicator_id": indicator.id,
-                    "provider_id": provider["id"],
-                    "query_text": query_text,
-                    # Separa o que veio da pesquisa do que veio do Bloco E: sem
-                    # isso, a consulta gravada não diz por que ficou como ficou.
-                    "refined_terms": list(extras),
-                    "top_k": CHUNKS_PER_INDICATOR,
-                    "chunks": hits,
-                }
-            )
+    for (provider, indicator, extras), (query_text, _), hits in zip(
+        pares, consultas, resultados
+    ):
+        chunks_por_par[(provider["id"], indicator.id)] = hits
+        resultado.rag_audit.append(
+            {
+                "dimension": indicator.dimension,
+                "indicator_id": indicator.id,
+                "provider_id": provider["id"],
+                "query_text": query_text,
+                # Separa o que veio da pesquisa do que veio do Bloco E: sem
+                # isso, a consulta gravada não diz por que ficou como ficou.
+                "refined_terms": list(extras),
+                "top_k": CHUNKS_PER_INDICATOR,
+                "chunks": hits,
+            }
+        )
 
     # -- 2. Interpretação, uma chamada por (provedor × dimensão) --------------
     if concurrency is None:

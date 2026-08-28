@@ -1,17 +1,24 @@
 import { useEffect, useState } from "react";
 
+// Na ordem em que o backend de fato executa. A lista anterior punha o RAG em
+// terceiro e dava uma etapa própria ao AHP — que é aritmética pura e leva
+// microssegundos. Como as etapas avançam por tempo, o gestor via "calculando
+// AHP" por 3,5s enquanto o que estava acontecendo era a busca documental.
 const STAGES = [
-  { icon: "🧠", label: "Interpretando suas respostas com IA" },
-  { icon: "⚖️", label: "Calculando pesos e ranking (AHP)" },
-  { icon: "📚", label: "Buscando evidências nos relatórios (RAG)" },
-  { icon: "📊", label: "Montando o relatório" },
+  { icon: "📚", label: "Buscando evidências nos relatórios" },
+  { icon: "🧠", label: "Interpretando as evidências com IA" },
+  { icon: "📊", label: "Calculando pesos, ranking e montando o relatório" },
 ];
 
 // A partir daqui a demora deixa de ser normal e vira informação útil: quase
-// sempre é o provedor de LLM segurando as chamadas por limite de taxa. O valor
-// tem folga sobre os ~80s medidos numa avaliação completa — avisar cedo demais
-// treinaria o gestor a ignorar o aviso.
-const DEMORA_ATIPICA_S = 150;
+// sempre é o provedor de LLM segurando as chamadas por limite de taxa.
+//
+// Baixou de 150s para 90s porque o tempo medido caiu: a recuperação passou a
+// embutir as 39 consultas num lote só (−17s) e a extração cabe numa onda de 9
+// chamadas simultâneas (−18s). Uma avaliação a frio fecha em torno de 15s, e
+// com as leituras em cache em poucos segundos. Manter o aviso em 150s o
+// deixaria mudo justamente quando começasse a haver o que avisar.
+const DEMORA_ATIPICA_S = 90;
 
 /**
  * Overlay de progresso do /api/recommend. As etapas avançam por tempo estimado —
@@ -33,10 +40,11 @@ export default function LoadingOverlay({ open }: { open: boolean }) {
       setElapsed(0);
       return;
     }
+    // Tempos ajustados ao que foi medido: a busca documental leva cerca de meio
+    // segundo em lote, e o grosso do tempo é a extração.
     const timers = [
-      setTimeout(() => setStage(1), 2500),
-      setTimeout(() => setStage(2), 6000),
-      setTimeout(() => setStage(3), 11000),
+      setTimeout(() => setStage(1), 1200),
+      setTimeout(() => setStage(2), 9000),
     ];
     const tick = setInterval(() => setElapsed((s) => s + 1), 1000);
     return () => {
@@ -67,7 +75,8 @@ export default function LoadingOverlay({ open }: { open: boolean }) {
           Gerando sua recomendação
         </h2>
         <p className="text-center text-xs text-slate-500 mb-1">
-          Costuma levar de 1 a 2 minutos — uma consulta à LLM por provedor e dimensão.
+          Costuma levar alguns segundos — uma consulta à LLM por provedor e dimensão.
+          Avaliações já feitas sobre os mesmos documentos reaproveitam a leitura.
         </p>
         <p className="text-center text-xs font-medium tabular-nums text-slate-400 mb-6">
           {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")} decorrido
