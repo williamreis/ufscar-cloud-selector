@@ -165,6 +165,8 @@ class Settings:
     llm_model: str
     llm_api_key: Optional[str]
     llm_temperature: float
+    #: Reaproveitar leituras já feitas (extração e refinamento). Ver `_env` abaixo.
+    llm_cache_enabled: bool
     llm_max_tokens: int
     ollama_base_url: str
 
@@ -363,6 +365,14 @@ def _build_settings() -> Settings:
         # relatório que se apresenta como auditável, isso é o defeito. Continua
         # sobrescritível por LLM_TEMPERATURE para experimentação.
         llm_temperature=float(_env("LLM_TEMPERATURE", "0.0")),
+        # Ligado por padrão. O cache guarda a leitura bruta da LLM por
+        # (provedor, dimensão, trechos, prompt, modelo) e é o que faz dois
+        # envios idênticos produzirem o mesmo relatório: temperatura 0 reduz o
+        # não-determinismo do modelo, não o elimina, e sem cache 4 das 39
+        # células oscilavam entre execuções derrubando indicadores inteiros.
+        # Desligar só faz sentido para medir essa oscilação de propósito.
+        llm_cache_enabled=_env("LLM_CACHE_ENABLED", "true").strip().lower()
+        not in ("0", "false", "no", "off"),
         # 1500 truncava a extração: uma dimensão devolve um `finding` por
         # indicador (5, no questionário atual) com resumo em texto, e os modelos
         # de raciocínio ainda gastam parte do teto pensando antes de escrever o
