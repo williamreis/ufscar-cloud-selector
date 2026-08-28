@@ -153,19 +153,29 @@ def compute_scores(
     # saída estável entre execuções — a posição em si é tratada logo abaixo.
     linhas.sort(key=lambda linha: (-linha[0], linha[2]))
 
+    # Margem de indiferença (`tie_break.tolerance` do scales.json): abaixo dela
+    # duas pontuações não são tratadas como diferentes.
+    #
+    # A comparação é contra o **líder do grupo de empate**, não contra o vizinho
+    # imediato. Comparar com o vizinho encadeia: com tolerância de 0,02 e a
+    # sequência 0,86 / 0,84 / 0,82, cada par dista 0,02 e os três acabariam no
+    # mesmo posto, embora o primeiro esteja 0,04 à frente do último — o dobro da
+    # margem. Ancorar no líder mantém a relação verificável: empatam com o
+    # primeiro os que estão a menos de uma margem dele.
     tolerancia = methodology.tie_break_tolerance
     scores: List[ProviderScore] = []
     posicao_anterior = 0
-    valor_anterior: Optional[float] = None
+    lider_do_grupo: Optional[float] = None
 
     for indice, (total, provider_id, nome, contribuicoes, por_dimensao) in enumerate(linhas):
         empatado_com_anterior = (
-            valor_anterior is not None and abs(total - valor_anterior) <= tolerancia
+            lider_do_grupo is not None and abs(total - lider_do_grupo) <= tolerancia
         )
         if empatado_com_anterior and methodology.tie_break_policy == "show_tie":
             posicao = posicao_anterior
         else:
             posicao = indice + 1
+            lider_do_grupo = total
 
         scores.append(
             ProviderScore(
@@ -179,7 +189,6 @@ def compute_scores(
             )
         )
         posicao_anterior = posicao
-        valor_anterior = total
 
     # `tied` marca também o primeiro elemento de um empate, não só o segundo:
     # um relatório que destaca "1º lugar" precisa saber que há outro ali.

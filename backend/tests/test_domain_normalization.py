@@ -373,8 +373,12 @@ def test_contribuicao_por_dimensao_soma_o_score(metodologia):
 
 
 def test_ranking_e_decrescente(metodologia):
+    # Valores bem separados de propósito: 100 / 80 / 60 normalizam para
+    # 1,00 / 0,80 / 0,60, muito além da margem de indiferença. O teste é sobre a
+    # ORDEM; misturar nele diferenças pequenas o transformaria, sem querer, num
+    # teste de empate — que tem os seus próprios, logo abaixo.
     conjunto = build_comparability_set(
-        desempenho("performance_availability", {"aws": 99.0, "gcp": 100.0, "azure": 98.0}),
+        desempenho("performance_availability", {"aws": 80.0, "gcp": 100.0, "azure": 60.0}),
         IDS,
         ["performance_availability"],
         metodologia,
@@ -386,6 +390,7 @@ def test_ranking_e_decrescente(metodologia):
     assert scores == sorted(scores, reverse=True)
     assert resultado.scores[0].provider_id == "gcp"
     assert [s.rank for s in resultado.scores] == [1, 2, 3]
+    assert not resultado.has_ties
 
 
 def test_empate_nao_e_desfeito_por_criterio_oculto(metodologia):
@@ -404,6 +409,61 @@ def test_empate_nao_e_desfeito_por_criterio_oculto(metodologia):
     assert {s.provider_id for s in empatados} == {"aws", "gcp"}
     assert empatados[0].rank == empatados[1].rank
     assert resultado.has_ties
+
+
+def test_margem_de_indiferenca_agrupa_pontuacoes_proximas(metodologia):
+    """
+    Abaixo da margem, duas pontuações não são tratadas como diferentes. O caso
+    real: as simulações fechavam com 0,815 / 0,814 / 0,813, e o relatório coroava
+    o primeiro como se 0,002 fosse uma classificação.
+    """
+    assert metodologia.tie_break_tolerance >= 0.01, (
+        "com tolerância ~0 só empate exato é reconhecido, e ruído vira ordem"
+    )
+    # 99,99 · 99,98 · 90,0 → normalizados 1,0 · 0,9999 · 0,9001
+    conjunto = build_comparability_set(
+        desempenho("performance_availability", {"aws": 99.99, "gcp": 99.98, "azure": 90.0}),
+        IDS,
+        ["performance_availability"],
+        metodologia,
+    )
+    efetivos = renormalize_weights(
+        {"performance_availability": 1.0}, ["performance_availability"]
+    )
+    resultado = compute_scores(PROVEDORES, conjunto, efetivos, metodologia)
+
+    por_id = {s.provider_id: s for s in resultado.scores}
+    assert por_id["aws"].rank == por_id["gcp"].rank  # 0,0001 de diferença
+    assert por_id["azure"].rank > por_id["aws"].rank  # 0,10 é diferença de verdade
+    assert resultado.has_ties
+
+
+def test_empate_e_medido_contra_o_lider_do_grupo(metodologia):
+    """
+    Comparar com o vizinho imediato encadeia: numa sequência em que cada par
+    dista menos que a margem, o último acabaria empatado com o primeiro mesmo
+    estando muito além dela. A âncora é o líder do grupo.
+    """
+    tol = metodologia.tie_break_tolerance
+    # Escadinha: cada degrau tem 80% da margem, mas o total passa de duas margens.
+    passo = tol * 0.8
+    conjunto = build_comparability_set(
+        desempenho(
+            "performance_availability",
+            {"aws": 100.0, "gcp": 100.0 * (1 - passo), "azure": 100.0 * (1 - 2 * passo)},
+        ),
+        IDS,
+        ["performance_availability"],
+        metodologia,
+    )
+    efetivos = renormalize_weights(
+        {"performance_availability": 1.0}, ["performance_availability"]
+    )
+    resultado = compute_scores(PROVEDORES, conjunto, efetivos, metodologia)
+    por_id = {s.provider_id: s for s in resultado.scores}
+
+    assert por_id["gcp"].rank == por_id["aws"].rank  # dentro da margem do líder
+    assert por_id["azure"].rank > por_id["aws"].rank  # 1,6 margem do líder: fora
 
 
 def test_pesos_efetivos_do_resultado_somam_1(metodologia):

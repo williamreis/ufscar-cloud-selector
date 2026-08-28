@@ -20,6 +20,7 @@ from ahp import derive_criteria_weights
 from consistency_repair import suggest_minimal_revision
 from config import get_settings
 from domain import (
+    analyze_sensitivity,
     build_comparability_set,
     compute_scores,
     get_methodology,
@@ -308,6 +309,24 @@ async def recommend(q: QuestionnaireResponse):
     )
     scoring = compute_scores(evaluated, comparability, effective_weights, methodology)
 
+    # 7.1) Sensibilidade: quanto o peso de uma dimensão precisaria mudar para o
+    #      primeiro colocado deixar de ser o primeiro. Não altera o ranking —
+    #      mede o quanto ele decorre das prioridades declaradas. Sem isso, uma
+    #      liderança de 0,002 é exibida com a mesma firmeza de uma de 0,20.
+    sensitivity = analyze_sensitivity(
+        ranking=[{"id": s.provider_id, "score": s.score} for s in scoring.scores],
+        dimension_weights=criteria_weights,
+        local_weights={
+            w.indicator_id: w.local_weight
+            for w in weight_set.weights
+            if w.local_weight is not None
+        },
+        dimension_by_indicator={i.id: i.dimension for i in methodology.indicators},
+        normalized=comparability.normalized_by(),
+        valid_indicators=comparability.valid,
+        tie_break_tolerance=methodology.tie_break_tolerance,
+    )
+
     # 8) Ranking, matriz para o dashboard e memória de cálculo da agregação.
     criteria_keys = list(criteria_weights.keys())
     ranking = [
@@ -433,6 +452,10 @@ async def recommend(q: QuestionnaireResponse):
         },
         # Memória de cálculo da síntese: como cada score final foi obtido
         "synthesis": synthesis,
+        # Robustez do 1º lugar: margem para o 2º e quanto o peso de cada
+        # dimensão precisaria mudar para trocar o líder. É medida sobre o
+        # resultado, não entrada dele.
+        "sensitivity": sensitivity.as_dict() if sensitivity else None,
         # Pesos dos indicadores nos três níveis (§7), com a procedência de cada
         # coeficiente. É o que permite reconstruir por que um indicador pesa o
         # que pesa — se veio da dimensão priorizada ou da relevância declarada.
