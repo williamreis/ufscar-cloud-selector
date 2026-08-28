@@ -58,6 +58,24 @@ function loadDraft(): Draft | null {
   }
 }
 
+const BLOCK_ROLES = [
+  {
+    blocks: "Blocos A, B e C",
+    title: "Relevância dos indicadores",
+    text: "Define o peso de cada indicador dentro da sua dimensão.",
+  },
+  {
+    blocks: "Bloco D",
+    title: "Comparações par a par",
+    text: "Única fonte dos pesos entre as dimensões (AHP), com verificação de consistência.",
+  },
+  {
+    blocks: "Bloco E e campos abertos",
+    title: "Requisitos institucionais",
+    text: "Orientam a busca nos documentos e a justificativa do resultado.",
+  },
+];
+
 export default function Questionnaire() {
   const navigate = useNavigate();
   const { sessionId, setResult, setAnswers } = useAppState();
@@ -269,12 +287,26 @@ export default function Questionnaire() {
         <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-blue-500/20 blur-3xl" />
         <div className="relative">
           <h1 className="text-2xl font-bold mb-2">Questionário de Seleção de Provedores</h1>
-          <p className="text-slate-300 text-sm max-w-2xl">
+          <p className="text-slate-300 text-sm max-w-3xl">
             Responda com base em sustentabilidade, desempenho operacional e segurança da informação.
-            As comparações par-a-par do bloco D definem os pesos do AHP; as perguntas de relevância
-            registram quais indicadores merecem mais atenção, e os campos de texto livre são
-            interpretados por IA para redigir a justificativa do resultado.
+            Cada bloco tem um destino próprio no modelo — e nenhum campo de texto livre altera peso
+            algum.
           </p>
+
+          <ul className="mt-5 grid gap-3 sm:grid-cols-3">
+            {BLOCK_ROLES.map((b) => (
+              <li
+                key={b.blocks}
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur-sm"
+              >
+                <span className="block text-[10px] font-semibold uppercase tracking-wider text-blue-300">
+                  {b.blocks}
+                </span>
+                <span className="mt-1 block text-sm font-semibold text-white">{b.title}</span>
+                <span className="mt-0.5 block text-xs leading-snug text-slate-400">{b.text}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
 
