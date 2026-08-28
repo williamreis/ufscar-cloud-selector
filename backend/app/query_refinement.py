@@ -118,6 +118,14 @@ async def refine_queries(
         qa_pairs=wrap_user_context(format_qa_pairs(com_texto)),
     )
 
+    # Mesmo cache da extração, pelo mesmo motivo — e aqui o efeito é maior: o
+    # refinamento decide QUAIS trechos são recuperados, então uma variação aqui
+    # muda o contexto entregue à extração e derruba o cache dela em cascata.
+    # Estabilizar este passo é o que torna a avaliação inteira reproduzível.
+    cached = _cache_lookup(prompt)
+    if cached is not None:
+        return _refinements_from_raw(cached, indicators, log), None
+
     result = await get_llm_client().structured_generate(prompt, QueryRefinement)
 
     if not result.ok or not isinstance(result.data, QueryRefinement):
@@ -133,10 +141,87 @@ async def refine_queries(
         )
         return {}, result.run
 
+    _cache_store(prompt, result.data)
+    return _refinements_from_raw(result.data, indicators, log), result.run
+
+
+# ---------------------------------------------------------------------------
+# Cache do refinamento
+# ---------------------------------------------------------------------------
+#
+# Mesma ideia do cache de extração: guarda a saída BRUTA e refaz a limpeza dos
+# termos (`_clean_terms`) e a checagem de indicador em cima dela, para que uma
+# correção nessas regras valha também para os refinamentos já guardados.
+#
+# A chave é o prompt renderizado inteiro — ele já contém as respostas
+# dissertativas do gestor e a lista de indicadores, que é tudo o que faz a
+# resposta mudar. Texto diferente, chave diferente.
+
+
+def _cache_coordenadas(prompt: Any) -> Optional[Tuple[str, str]]:
+    try:
+        import db
+        from config import get_settings
+
+        if not get_settings().llm_cache_enabled:
+            return None
+        modelo = str(get_settings().llm_model)
+        impressao = db.chunks_fingerprint([prompt.system, prompt.user])
+        chave = db.extraction_cache_key(
+            "-", "query_refinement", impressao, prompt.prompt_id, prompt.prompt_version, modelo
+        )
+        return chave, impressao
+    except Exception as exc:  # noqa: BLE001 - cache indisponível não é erro de avaliação
+        logger.warning("Cache de refinamento indisponível: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def _cache_lookup(prompt: Any) -> Optional[QueryRefinement]:
+    coord = _cache_coordenadas(prompt)
+    if coord is None:
+        return None
+    try:
+        import db
+
+        bruto = db.get_cached_extraction(coord[0])
+        return QueryRefinement.model_validate_json(bruto) if bruto else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Refinamento em cache descartado: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def _cache_store(prompt: Any, data: QueryRefinement) -> None:
+    coord = _cache_coordenadas(prompt)
+    if coord is None:
+        return
+    try:
+        import db
+        from config import get_settings
+
+        db.save_cached_extraction(
+            cache_key=coord[0],
+            provider_id="-",
+            dimension="query_refinement",
+            chunks_hash=coord[1],
+            prompt_id=prompt.prompt_id,
+            prompt_version=prompt.prompt_version,
+            model=str(get_settings().llm_model),
+            raw_response=data.model_dump_json(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Refinamento não guardado em cache: %s: %s", type(exc).__name__, exc)
+
+
+def _refinements_from_raw(
+    data: QueryRefinement,
+    indicators: Sequence[IndicatorConfig],
+    log: GuardrailLog,
+) -> Dict[str, Tuple[str, ...]]:
+    """Valida e limpa os termos. Roda igual no caminho novo e no do cache."""
     conhecidos = {i.id for i in indicators}
     refinamentos: Dict[str, Tuple[str, ...]] = {}
 
-    for hint in result.data.refinements:
+    for hint in data.refinements:
         if hint.indicator_id not in conhecidos:
             log.record(
                 rule_id="QUERY_REFINEMENT_UNKNOWN_INDICATOR",
@@ -151,7 +236,7 @@ async def refine_queries(
             # Duplicata do mesmo indicador: a primeira vale, sem escolher "a melhor".
             refinamentos.setdefault(hint.indicator_id, termos)
 
-    return refinamentos, result.run
+    return refinamentos
 
 
 __all__ = [
