@@ -104,6 +104,7 @@ export default function Report({
     evidences,
     ahp,
     synthesis,
+    sensitivity,
     indicator_weights: indicatorWeights,
     coverage,
     submission_id: submissionId,
@@ -350,6 +351,75 @@ export default function Report({
               </div>
             ))}
           </div>
+
+          {sensitivity && (
+            <div
+              className={
+                "mb-5 rounded-xl border px-4 py-3 text-sm leading-relaxed " +
+                (sensitivity.margin_within_tolerance || !sensitivity.robust
+                  ? "border-amber-300 bg-amber-50 text-amber-900"
+                  : "border-emerald-300 bg-emerald-50 text-emerald-900")
+              }
+            >
+              <p className="font-semibold">
+                {sensitivity.margin_within_tolerance
+                  ? "Os provedores no topo estão tecnicamente empatados."
+                  : sensitivity.robust
+                    ? "O primeiro lugar é robusto às suas prioridades."
+                    : "O primeiro lugar depende do peso que você deu às dimensões."}
+              </p>
+              <p className="mt-1">
+                A diferença entre o 1º e o 2º colocados é de{" "}
+                <strong>{sensitivity.margin.toFixed(3)}</strong> ponto
+                {sensitivity.margin_within_tolerance && (
+                  <> — abaixo da margem de indiferença de {sensitivity.tie_break_tolerance.toFixed(2)}</>
+                )}
+                .{" "}
+                {sensitivity.robust ? (
+                  <>
+                    Nenhuma mudança no peso de uma dimensão, sozinha, troca quem lidera.
+                  </>
+                ) : (
+                  <>
+                    Bastaria mover o peso de{" "}
+                    <strong>
+                      {CRITERIA_LABELS[sensitivity.most_fragile_dimension || ""] ||
+                        sensitivity.most_fragile_dimension}
+                    </strong>{" "}
+                    em{" "}
+                    <strong>
+                      {Math.abs((sensitivity.most_fragile_delta || 0) * 100).toFixed(1)} ponto
+                      {Math.abs((sensitivity.most_fragile_delta || 0) * 100) >= 2 ? "s" : ""}
+                    </strong>{" "}
+                    percentuais para o topo mudar.
+                  </>
+                )}
+              </p>
+              <ul className="mt-2 space-y-0.5 text-[12px]">
+                {sensitivity.dimensions.map((d) => (
+                  <li key={d.dimension}>
+                    {CRITERIA_ICONS[d.dimension] || ""} {CRITERIA_LABELS[d.dimension] || d.dimension}{" "}
+                    <span className="font-mono">({fmtPct(d.weight)})</span> —{" "}
+                    {d.flips ? (
+                      <>
+                        troca o líder para{" "}
+                        <strong>{providerName(d.flip_leader || "")}</strong> com{" "}
+                        {(d.flip_delta || 0) > 0 ? "+" : "−"}
+                        {Math.abs((d.flip_delta || 0) * 100).toFixed(1)} p.p.
+                      </>
+                    ) : (
+                      <>nenhum peso possível troca o líder</>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-[11px] opacity-80">
+                Cada linha move o peso daquela dimensão e reescala as outras
+                proporcionalmente, mantendo as suas demais respostas. É uma medida sobre o
+                resultado: não altera pontuação, peso nem posição.
+              </p>
+            </div>
+          )}
 
           <ChartCard>
             <ResponsiveContainer width="100%" height={230}>

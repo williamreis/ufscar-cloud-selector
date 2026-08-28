@@ -299,6 +299,10 @@ class RecommendationResponse(BaseModel):
     ahp: Optional[Dict[str, Any]] = None
     # Memória de cálculo da síntese: nota → normalizada → contribuição → score final
     synthesis: Optional[Dict[str, Any]] = None
+    # Robustez do 1º lugar: margem para o 2º e quanto o peso de cada dimensão
+    # precisaria mudar para trocar o líder. Nulo quando não há o que analisar
+    # (menos de dois provedores ou conjunto comparável vazio).
+    sensitivity: Optional[Dict[str, Any]] = None
     # Pesos dos indicadores nos três níveis (§7): coeficiente de relevância,
     # peso local, peso da dimensão e peso global.
     indicator_weights: Optional[Dict[str, Any]] = None

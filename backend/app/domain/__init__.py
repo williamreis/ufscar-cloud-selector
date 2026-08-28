@@ -10,6 +10,7 @@ caminho e sempre com o mesmo resultado.
     weights        coeficiente → peso local → peso global
     normalization  evidência → valor comparável → conjunto V → renormalização
     scoring        pontuação, ranking e contribuição por indicador/dimensão
+    sensitivity    quanto o peso de uma dimensão precisa mudar para trocar o líder
 
 O motor AHP das dimensões continua em `ahp.py`, que já existia e é chamado daqui.
 """
@@ -37,6 +38,8 @@ from domain.normalization import (
     value_from_category,
 )
 from domain.scoring import Contribution, ProviderScore, ScoringResult, compute_scores
+from domain.sensitivity import DimensionSensitivity, SensitivityResult
+from domain.sensitivity import analyze as analyze_sensitivity
 from domain.weights import (
     RELEVANCE_ANSWERED,
     RELEVANCE_MISSING,
@@ -74,6 +77,9 @@ __all__ = [
     "build_comparability_set",
     "collect_relevance",
     "compute_scores",
+    "DimensionSensitivity",
+    "SensitivityResult",
+    "analyze_sensitivity",
     "compute_weights",
     "get_methodology",
     "indicators_for",
