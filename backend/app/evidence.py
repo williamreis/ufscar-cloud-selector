@@ -309,6 +309,32 @@ def describe_indicators(indicators: Sequence[IndicatorConfig]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _parcial(
+    raw: IndicatorEvidence,
+    indicator: IndicatorConfig,
+    provider_id: str,
+    partial_status: str,
+) -> Finding:
+    """
+    Evidência declarada parcial: o trecho trata do tema sem trazer o valor.
+
+    Fica sem `value` e sem `category` de propósito — é o que a distingue de uma
+    evidência completa e o que a mantém fora do cálculo. A fonte é preservada
+    para que o relatório possa mostrar em que trecho o modelo se apoiou.
+    """
+    return Finding(
+        provider_id=provider_id,
+        indicator_id=indicator.id,
+        dimension=indicator.dimension,
+        status=partial_status,
+        nature=raw.nature,
+        extracted_value=raw.extracted_value,
+        summary=raw.summary,
+        source_chunk_id=raw.source_chunk_id,
+        source_document=raw.source_document,
+    )
+
+
 def _validate_finding(
     raw: IndicatorEvidence,
     indicator: IndicatorConfig,
@@ -328,6 +354,14 @@ def _validate_finding(
     O estado `PARTIAL` obedece a `partial_counts_as_comparable` do `scales.json`
     (§29.2): com `false` — o padrão — ele fica fora do conjunto comparável, por
     decisão acadêmica ainda em aberto, não por limitação do código.
+
+    Desde a versão 4 do prompt, `PARTIAL` chega **sem valor e sem categoria**: a
+    regra 12 o reserva para meta futura, recorte parcial ou tema sem número, e
+    manda os campos virem nulos. Uma resposta com valor e estado `PARTIAL` deixou
+    de ser esperada; se vier, o valor é preservado e o estado é respeitado — o
+    código não promove a evidência por conta própria, porque a distinção entre
+    "100% de energia renovável em 2023" e "compromisso de 100% até 2025" está no
+    texto, não no número, e só quem leu o trecho pode fazê-la.
     """
     partial_status = (
         STATUS_FOUND if methodology.partial_counts_as_comparable else STATUS_PARTIAL
@@ -375,6 +409,13 @@ def _validate_finding(
 
     if indicator.is_quantitative:
         if raw.value is None:
+            # `PARTIAL` sem valor é a resposta certa, não uma resposta fora das
+            # regras: a regra 12 do prompt manda usá-lo justamente quando o
+            # trecho traz meta futura, recorte parcial ou o tema sem número — e
+            # manda deixar `value` nulo nesse caso. Tratar isso como INVALID
+            # acusaria o modelo de violar a regra que ele acabou de cumprir.
+            if raw.evidence_status == "PARTIAL":
+                return _parcial(raw, indicator, provider_id, partial_status)
             return rejeitar(
                 "EVIDENCE_MISSING_VALUE",
                 "Indicador quantitativo sem valor numérico na resposta.",
@@ -420,6 +461,8 @@ def _validate_finding(
             f"Categoria {raw.category!r} fora da rubrica do indicador (permitidas: {permitidas}).",
         )
     if status_rubrica == STATUS_NOT_FOUND:
+        if raw.evidence_status == "PARTIAL":
+            return _parcial(raw, indicator, provider_id, partial_status)
         return rejeitar(
             "EVIDENCE_MISSING_CATEGORY",
             "Indicador qualitativo sem categoria na resposta.",
