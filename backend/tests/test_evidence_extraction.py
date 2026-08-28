@@ -68,6 +68,30 @@ def _chunk(chunk_id="chunk-1", provider="aws"):
     }
 
 
+def _stub_rag(monkeypatch, modulo, por_consulta):
+    """
+    Substitui a recuperação nos dois pontos de entrada.
+
+    A busca passou a ser em lote (`search_many`) para embutir as 39 consultas de
+    uma vez. Substituir só `search` deixaria o teste passar por um caminho que a
+    aplicação não usa mais; substituir os dois mantém o teste sobre o código real
+    e preserva a intenção de cada stub — `por_consulta(provider_id)` devolve o que
+    aquela consulta recupera.
+    """
+    monkeypatch.setattr(
+        modulo.rag,
+        "search",
+        lambda query, top_k=None, session_id=None, provider_id=None: por_consulta(provider_id),
+    )
+    monkeypatch.setattr(
+        modulo.rag,
+        "search_many",
+        lambda consultas, top_k=None, session_id=None: [
+            por_consulta(provider_id) for _, provider_id in consultas
+        ],
+    )
+
+
 def _bruto(**kwargs):
     base = {
         "indicator_id": "performance_availability",
@@ -528,13 +552,7 @@ class _FakeLLM:
 def _rodar_extracao(monkeypatch, metodologia, indicadores, payload, status="OK"):
     fake = _FakeLLM(payload, status)
     monkeypatch.setattr(evidence, "get_llm_client", lambda: fake)
-    monkeypatch.setattr(
-        evidence.rag,
-        "search",
-        lambda query, top_k=None, session_id=None, provider_id=None: [
-            _chunk(f"chunk-{provider_id}", provider_id)
-        ],
-    )
+    _stub_rag(monkeypatch, evidence, lambda pid: [_chunk(f"chunk-{pid}", pid)])
     resultado = asyncio.run(
         evidence.extract_performances(
             providers=PROVEDORES,
@@ -627,13 +645,7 @@ def test_ranking_completo_quando_todos_tem_evidencia(monkeypatch, metodologia, d
             return StructuredResult(run=run, data=dados, raw_text="")
 
     monkeypatch.setattr(evidence, "get_llm_client", lambda: Cliente())
-    monkeypatch.setattr(
-        evidence.rag,
-        "search",
-        lambda query, top_k=None, session_id=None, provider_id=None: [
-            _chunk(f"chunk-{provider_id}", provider_id)
-        ],
-    )
+    _stub_rag(monkeypatch, evidence, lambda pid: [_chunk(f"chunk-{pid}", pid)])
 
     extraction = asyncio.run(
         evidence.extract_performances(
@@ -707,9 +719,7 @@ def test_sem_trecho_recuperado_a_llm_nao_e_chamada(monkeypatch, metodologia, dis
             raise AssertionError("não deveria chamar a LLM sem trechos")
 
     monkeypatch.setattr(evidence, "get_llm_client", lambda: Cliente())
-    monkeypatch.setattr(
-        evidence.rag, "search", lambda *a, **k: []
-    )
+    _stub_rag(monkeypatch, evidence, lambda pid: [])
     extraction = asyncio.run(
         evidence.extract_performances(
             providers=PROVEDORES,

@@ -41,10 +41,8 @@ def client(tmp_path, monkeypatch):
 
     # RAG: um provedor com documentos, os demais sem.
     monkeypatch.setattr(main.rag, "count_chunks_by_provider", lambda: {"aws": 12, "gcp": 4})
-    monkeypatch.setattr(
-        main.rag,
-        "search",
-        lambda query, top_k=None, session_id=None, provider_id=None: [
+    def _trechos(provider_id):
+        return [
             {
                 "page_content": "SLA de 99,99% e certificação ISO 27001.",
                 "score": 0.21,
@@ -56,6 +54,20 @@ def client(tmp_path, monkeypatch):
                 "scope": "global",
                 "provider": provider_id,
             }
+        ]
+
+    # A recuperação passou a ser em lote; substituir só `search` testaria um
+    # caminho que a aplicação não usa mais.
+    monkeypatch.setattr(
+        main.rag,
+        "search",
+        lambda query, top_k=None, session_id=None, provider_id=None: _trechos(provider_id),
+    )
+    monkeypatch.setattr(
+        main.rag,
+        "search_many",
+        lambda consultas, top_k=None, session_id=None: [
+            _trechos(pid) for _, pid in consultas
         ],
     )
 
