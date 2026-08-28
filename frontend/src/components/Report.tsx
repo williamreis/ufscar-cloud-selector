@@ -49,8 +49,6 @@ const PROVIDER_COLORS: Record<string, string> = {
   aws: "#2a78d6",
   gcp: "#eb6834",
   azure: "#1baf7a",
-  oracle: "#eda100",
-  ibm: "#e87ba4",
 };
 const FALLBACK_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"];
 
@@ -60,6 +58,21 @@ function providerColor(id: string, idx: number): string {
 
 const fmt3 = (v: unknown) => Number(v).toFixed(3);
 const fmtPct = (v: unknown) => `${(Number(v) * 100).toFixed(0)}%`;
+
+const REPORT_PARTS = [
+  {
+    title: "Ranking",
+    text: "Pontuação de cada provedor e o desempenho comparado por dimensão.",
+  },
+  {
+    title: "Pesos e cálculo",
+    text: "Pesos das dimensões e dos indicadores, com a memória de cálculo do AHP e da agregação.",
+  },
+  {
+    title: "Evidências",
+    text: "Os trechos dos documentos que sustentam cada nota, com arquivo e página.",
+  },
+];
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
@@ -151,10 +164,25 @@ export default function Report({
         <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-indigo-500/20 blur-3xl" />
         <div className="relative">
           <h1 className="text-2xl font-bold mb-2">Relatório da recomendação</h1>
-          <p className="text-slate-300 text-sm max-w-2xl">
-            Ranking, pesos dos critérios e evidências gerados a partir do seu questionário,
-            combinando AHP (decisão multicritério) e IA generativa com RAG.
+          <p className="text-slate-300 text-sm max-w-3xl">
+            Como as prioridades que você declarou se traduzem em ordem entre os provedores. Nada
+            aqui é conclusão fechada: cada número tem o cálculo e a fonte à vista, e a decisão
+            permanece sua.
           </p>
+
+          <ul className="mt-5 grid gap-3 sm:grid-cols-3">
+            {REPORT_PARTS.map((part) => (
+              <li
+                key={part.title}
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur-sm"
+              >
+                <span className="block text-sm font-semibold text-white">{part.title}</span>
+                <span className="mt-0.5 block text-xs leading-snug text-slate-400">
+                  {part.text}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
 
