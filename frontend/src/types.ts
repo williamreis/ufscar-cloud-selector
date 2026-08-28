@@ -269,13 +269,23 @@ export interface RankingRow {
   name: string;
   rank: number;
   score: number;
+  /**
+   * Pontuação igual à de outro provedor, dentro da tolerância de desempate.
+   * Vem do backend (`show_tie`, §12) e precisa chegar até a tela: sem ele o
+   * relatório ordena por posição na lista e apresenta como decidido o que o
+   * cálculo deixou empatado.
+   */
+  tied: boolean;
 }
 
 export interface ProviderScoreRow extends RankingRow {
   sustainability?: number;
   performance?: number;
   security?: number;
-  [criterion: string]: string | number | undefined;
+  // Dimensão sem indicador válido vem **ausente** do backend, nunca como zero
+  // (§11) — por isso as três são opcionais e o índice admite `undefined`.
+  // `boolean` entra por causa de `tied`, herdado de RankingRow.
+  [criterion: string]: string | number | boolean | undefined;
 }
 
 export interface EvidenceItem {

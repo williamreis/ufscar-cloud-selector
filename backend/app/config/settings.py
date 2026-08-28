@@ -353,7 +353,16 @@ def _build_settings() -> Settings:
         llm_provider=llm_provider,
         llm_model=llm_model,
         llm_api_key=llm_api_key,
-        llm_temperature=float(_env("LLM_TEMPERATURE", "0.2")),
+        # Zero por padrão. As três chamadas do produto — extração de evidência,
+        # refinamento de consulta e notas de preferência — passam todas por
+        # `structured_generate`: são classificação e leitura de documento em
+        # JSON, e não há nada nelas que a amostragem melhore. Com 0.2, duas
+        # execuções do mesmo questionário sobre o mesmo índice liam valores
+        # diferentes do mesmo relatório (90% num envio, 100% no seguinte) e
+        # mudavam quais indicadores sobreviviam ao conjunto comparável — num
+        # relatório que se apresenta como auditável, isso é o defeito. Continua
+        # sobrescritível por LLM_TEMPERATURE para experimentação.
+        llm_temperature=float(_env("LLM_TEMPERATURE", "0.0")),
         # 1500 truncava a extração: uma dimensão devolve um `finding` por
         # indicador (5, no questionário atual) com resumo em texto, e os modelos
         # de raciocínio ainda gastam parte do teto pensando antes de escrever o

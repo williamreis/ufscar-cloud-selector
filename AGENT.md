@@ -460,12 +460,31 @@ categoria, nunca nota.
 
 **O prompt principal.** `PROMPT_EVIDENCE_EXTRACTION_V1` é a implementação literal
 do Quadro 26: cada linha do quadro é uma seção nomeada no *system prompt*, com a
-instrução operacional reproduzida ao pé da letra. As regras 12–14 (isolamento do
-contexto documental, cobertura da lista, formato JSON) não vêm do quadro e ficam
-agrupadas à parte, para que se saiba o que é da dissertação e o que a
-implementação acrescentou. `test_evidence_extraction.py` tem um teste
-parametrizado por linha do Quadro 26 — editar o prompt e derrubar uma instrução
-quebra a suíte.
+instrução operacional reproduzida ao pé da letra. As regras 12–15 (estado da
+evidência, isolamento do contexto documental, cobertura da lista, formato JSON)
+não vêm do quadro e ficam agrupadas à parte, para que se saiba o que é da
+dissertação e o que a implementação acrescentou. `test_evidence_extraction.py`
+tem um teste parametrizado por linha do Quadro 26 — editar o prompt e derrubar
+uma instrução quebra a suíte.
+
+**Regra 12, e por que ela existe (prompt v4).** Os quatro estados da §11 são do
+produto, não do quadro, e a primeira versão do prompt só descrevia dois:
+`NOT_FOUND` e `PARTIAL`. Sem dizer quando usar `FOUND`, o modelo respondia
+`PARTIAL` para extração completa — PUE de 1,15, unidade certa, trecho citado —, e
+`PARTIAL` fica fora do conjunto comparável (§29.2). O resultado era um relatório
+inteiro de zeros com os valores corretos extraídos e descartados: 3 `FOUND` e 11
+`PARTIAL` em 39 evidências, 0 de 13 indicadores na comparação. A regra 12 define
+`FOUND` como o estado normal da extração bem-sucedida e reserva `PARTIAL` para o
+que ele descreve de fato — meta futura, recorte parcial, tema sem número —,
+exigindo `value` e `category` nulos nesse caso. Com ela, a mesma avaliação passou
+a 15 `FOUND`, 0 `PARTIAL` e 3 indicadores na comparação.
+
+O código **não** promove a evidência por conta própria: um `PARTIAL` com valor
+continua sendo `PARTIAL`. A diferença entre "100% de energia renovável em 2023" e
+"compromisso de 100% até 2025" está no texto, não no número, e só quem leu o
+trecho pode fazê-la — sobrescrever o estado no determinístico transformaria meta
+em desempenho. O que mudou no código é o oposto: `PARTIAL` sem valor deixou de
+ser `INVALID`, porque é exatamente a forma que a regra 12 pede.
 
 A saída segue os campos que a §5.4 enumera: indicador analisado, evidência
 identificada (`summary`), natureza, **valor ou característica extraída**

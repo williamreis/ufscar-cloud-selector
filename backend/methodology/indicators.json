@@ -110,13 +110,10 @@
       "dimension": "sustainability",
       "name": "Redução de emissões de gases de efeito estufa",
       "question_id": "sust_q3",
-      "data_type": "quantitative",
-      "direction": "minimize",
-      "expected_units": [
-        "gCO2e/kWh",
-        "kgCO2e/kWh"
-      ],
-      "_todo": "Tratado como quantitativo (CUE / intensidade de carbono), conforme a fórmula do Quadro 22: emissão de gases de efeito estufa dividida pela energia dos equipamentos. Emissão absoluta (tCO2e) NÃO é aceita — comparar totais puniria o provedor maior por ser maior. Em aberto: boa parte da evidência publicada é compromisso (net-zero), não valor; se a dissertação optar por avaliar compromissos, isto vira qualitativo.",
+      "data_type": "qualitative",
+      "rubric": "nivel_atendimento",
+      "_decisao": "Era quantitativo (CUE / intensidade de carbono, Quadro 22) e passou a qualitativo — a alternativa que o _todo anterior já previa. O motivo é empírico: em seis execuções sobre a base documental completa, os três provedores foram INVALID em todas, sempre por unidade. O Quadro 22 pede emissão ÷ energia dos equipamentos, e nenhum dos relatórios publica essa razão: eles trazem total absoluto (tCO2e) ou percentual de redução. Um indicador que nunca produz valor não é rigor, é peso morto — sai do conjunto comparável em toda avaliação e seu peso é redistribuído em silêncio para os outros quatro da dimensão. Como qualitativo, o que se avalia é o compromisso publicado (meta, prazo, escopos cobertos, verificação por terceiros), pela mesma rubrica do Quadro 23 já usada em resíduos eletrônicos e circularidade.",
+      "_nota_limite": "A troca tem custo e ele deve ser dito: deixa de ser medida física e vira classificação de compromisso, então dois provedores com metas parecidas empatam. Se a dissertação vier a exigir a métrica do Quadro 22, o caminho é voltar a quantitativo E acrescentar ao corpus fontes que publiquem intensidade de carbono — sem as fontes, reverter só recria o INVALID.",
       "search_terms": [
         "CUE",
         "Carbon Usage Effectiveness",
@@ -140,9 +137,9 @@
         "quadro_24": [
           "Emissão/intensidade de carbono – CUE/SCI"
         ],
-        "evidence_example": "CUE = valor divulgado"
+        "evidence_example": "meta de neutralidade com prazo, escopos cobertos e verificação de terceiros"
       },
-      "_nota": "Unidades de INTENSIDADE, não de total. O Quadro 22 define CUE como emissão de gases de efeito estufa dividida pela energia dos equipamentos; um total absoluto em tCO2e não é essa métrica, e compará-lo entre provedores puniria o maior por ser maior. g e kg por kWh diferem por mil: a guarda de unidades divergentes retira o indicador se os provedores publicarem em escalas diferentes, em vez de converter em silêncio."
+      "_nota": "A linha do Quadro 22 (CUE/SCI) continua sendo a origem conceitual do indicador, mas a avaliação passou a ser da rubrica e não da razão emissão ÷ energia — ver `_decisao`. Um total absoluto em tCO2e segue sem servir de nota comparável: compará-lo entre provedores puniria o maior por ser maior. Sob a rubrica, o que separa os níveis é a força do compromisso documentado, não o tamanho do provedor."
     },
     {
       "id": "sustainability_ewaste_management",
