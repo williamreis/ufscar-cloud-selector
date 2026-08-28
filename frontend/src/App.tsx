@@ -25,7 +25,7 @@ export default function App() {
           </Routes>
         </main>
         <footer className="text-center text-xs text-slate-400 py-6">
-          UFSCar - Assistente de Seleção de Provedores de Cloud
+          UFSCar · Plataforma de Seleção de Provedores de Cloud Computing
         </footer>
       </div>
     </AppStateProvider>
