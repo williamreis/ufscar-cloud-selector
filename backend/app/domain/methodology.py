@@ -122,6 +122,13 @@ class IndicatorConfig:
     quadro_22: Tuple[str, ...] = ()
     quadro_24: Tuple[str, ...] = ()
     evidence_example: Optional[str] = None
+    # Frase que vai para o prompt dizendo QUAL grandeza do documento é a certa,
+    # quando o relatório publica mais de uma que casa com os termos de busca.
+    # O caso concreto: o Google divulga "100% de correspondência renovável" e
+    # também a capacidade contratada em GW; o extrator trazia os 22 GW, que a
+    # guarda de unidades recusava — evidência real, grandeza errada. Não altera
+    # cálculo nenhum: é desambiguação de leitura.
+    evidence_hint: Optional[str] = None
 
     @property
     def is_quantitative(self) -> bool:
@@ -145,6 +152,7 @@ class IndicatorConfig:
             "quadro_22": list(self.quadro_22),
             "quadro_24": list(self.quadro_24),
             "evidence_example": self.evidence_example,
+            "evidence_hint": self.evidence_hint,
         }
 
 
@@ -415,6 +423,7 @@ def _build_indicators(
                 quadro_22=tuple(cobertura.get("quadro_22") or ()),
                 quadro_24=tuple(cobertura.get("quadro_24") or ()),
                 evidence_example=cobertura.get("evidence_example"),
+                evidence_hint=entry.get("evidence_hint"),
             )
         )
 
