@@ -4,6 +4,8 @@
 *.sql
 *.db
 *.db-*
+*.db.*
+audit.db*
 
 # Bytecode do Python
 __pycache__/
