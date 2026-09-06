@@ -10,12 +10,28 @@ A versão anterior deste script montava o índice por conta própria, com
 ativamente nocivo: os trechos gravados por aqui entrariam no mesmo índice **sem
 `chunk_id`**, e portanto sem como sustentar a proveniência que a §19 exige.
 
+**Sobre reindexar.** O índice FAISS não é idempotente: `rag.ingest_paths`
+acrescenta vetores ao que já existe e não remove os da ingestão anterior do mesmo
+documento. Rodar a ingestão completa duas vezes deixa cada trecho duplicado no
+índice — e o efeito não é só desperdício de espaço. A recuperação é por
+similaridade com `top_k` pequeno, então as cópias competem pelas mesmas vagas: um
+`top_k` de 3 passa a entregar dois trechos distintos, e a evidência que estava na
+terceira posição some do contexto da LLM. O indicador vira `NOT_FOUND`, sai do
+conjunto comparável (§11.1) e o ranking perde base — tudo isso sem erro nenhum
+aparecendo em lugar algum.
+
+Por isso a ingestão **completa** limpa o índice antes, por padrão. Ingerir
+arquivos avulsos (com nomes na linha de comando) continua sendo acréscimo, que é
+o que se espera de quem manda um arquivo por vez.
+
 Uso:
 
-    python scripts/ingest_rag.py                 # tudo que estiver em data/pdf
-    python scripts/ingest_rag.py a.pdf b.txt     # apenas os arquivos indicados
+    python scripts/ingest_rag.py                 # tudo de data/pdf, reconstruindo o índice
+    python scripts/ingest_rag.py --sem-reset     # acrescenta (pode duplicar; ver acima)
+    python scripts/ingest_rag.py a.pdf b.txt     # apenas os indicados, sempre acrescentando
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -50,14 +66,40 @@ def collect_paths(argv: list) -> list:
 
 
 def main(argv: list) -> int:
+    parser = argparse.ArgumentParser(description="Ingestão dos documentos globais.")
+    parser.add_argument(
+        "--sem-reset",
+        action="store_true",
+        help="acrescenta ao índice existente em vez de reconstruí-lo (pode duplicar vetores)",
+    )
+    parser.add_argument("arquivos", nargs="*", help="arquivos específicos (padrão: tudo de data/pdf)")
+    args = parser.parse_args(argv)
+
     settings = get_settings()
-    paths = collect_paths(argv)
+    paths = collect_paths(args.arquivos)
     if not paths:
         print("Nenhum arquivo para ingerir. Coloque PDFs ou TXTs em data/pdf.")
         return 1
 
     print(f"Embeddings: {settings.embedding_provider}/{settings.embedding_model}")
     print(f"{len(paths)} arquivo(s) a processar.\n")
+
+    # Reconstruir só faz sentido quando a ingestão é do acervo inteiro: apagar o
+    # índice para depois acrescentar um arquivo avulso descartaria todo o resto.
+    ingestao_completa = not args.arquivos
+    if ingestao_completa and not args.sem_reset:
+        anteriores = rag.count_chunks()
+        if rag.delete_index():
+            db.init_db()
+            db.clear_documents(scope=SCOPE_GLOBAL)
+            print(f"Índice anterior removido ({anteriores} trechos) — reconstruindo do zero.\n")
+    elif ingestao_completa:
+        anteriores = rag.count_chunks()
+        if anteriores:
+            print(
+                f"AVISO: acrescentando ao índice existente ({anteriores} trechos). "
+                "Trechos já indexados serão duplicados e disputarão as vagas do top_k.\n"
+            )
 
     guardrail_log = GuardrailLog()
     result = rag.ingest_paths(paths, scope=SCOPE_GLOBAL, guardrail_log=guardrail_log)
