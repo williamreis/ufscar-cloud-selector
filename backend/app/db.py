@@ -462,6 +462,7 @@ class ExtractionCache(Base):
     provider_id: Mapped[str] = mapped_column(String(32), index=True)
     dimension: Mapped[str] = mapped_column(String(40), index=True)
     chunks_hash: Mapped[str] = mapped_column(String(64))
+    indicators_hash: Mapped[Optional[str]] = mapped_column(String(64))
     prompt_id: Mapped[str] = mapped_column(String(80))
     prompt_version: Mapped[str] = mapped_column(String(40))
     model: Mapped[str] = mapped_column(String(120))
@@ -489,6 +490,9 @@ _ADDITIVE_COLUMNS: Dict[str, Dict[str, str]] = {
     },
     "llm_runs": {
         "fallback_from": "VARCHAR(40)",
+    },
+    "extraction_cache": {
+        "indicators_hash": "VARCHAR(64)",
     },
 }
 
@@ -813,6 +817,7 @@ def extraction_cache_key(
     prompt_id: str,
     prompt_version: str,
     model: str,
+    indicators_hash: str = "",
 ) -> str:
     """
     Chave determinística da leitura: tudo o que, mudando, mudaria a resposta.
@@ -821,9 +826,17 @@ def extraction_cache_key(
     por varredura: assim uma extração feita com o prompt v5 continua no banco,
     identificável, ao lado da mesma extração com o v6. A auditoria de um envio
     antigo continua encontrando exatamente a leitura que o produziu.
+
+    `indicators_hash` cobre a especificação dos indicadores entregue na mensagem
+    do usuário — allowlist e **condições da rubrica**, unidades esperadas, dica
+    de grandeza e termos do Quadro 27. Sem ele a chave mentia: as condições da
+    rubrica vivem em `scales.json`, não no texto do prompt, e mudá-las mudava a
+    resposta sem mudar `prompt_version`. O efeito prático era o pior possível —
+    refinar a rubrica e receber de volta, do cache, a classificação feita sob a
+    regra antiga, com toda a aparência de que o refinamento não funcionou.
     """
     material = "\x1f".join(
-        [provider_id, dimension, chunks_hash, prompt_id, prompt_version, model]
+        [provider_id, dimension, chunks_hash, prompt_id, prompt_version, model, indicators_hash]
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -859,6 +872,7 @@ def save_cached_extraction(
     prompt_version: str,
     model: str,
     raw_response: str,
+    indicators_hash: Optional[str] = None,
 ) -> None:
     """
     Guarda a leitura bruta. Chave já existente não é sobrescrita.
@@ -877,6 +891,7 @@ def save_cached_extraction(
                 provider_id=provider_id,
                 dimension=dimension,
                 chunks_hash=chunks_hash,
+                indicators_hash=indicators_hash,
                 prompt_id=prompt_id,
                 prompt_version=prompt_version,
                 model=model,
