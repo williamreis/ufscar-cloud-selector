@@ -130,6 +130,186 @@
         "alto": "Evidência demonstra atendimento substancial ao indicador",
         "completo": "Evidência demonstra atendimento integral às condições previstas para o indicador"
       }
+    },
+    "_nota_rubricas_especificas": [
+      "PROPOSTA — pendente de revisão acadêmica. As nove rubricas abaixo NÃO",
+      "alteram o Quadro 23: os níveis, os rótulos e os valores (—/0,25/0,50/0,75/",
+      "1,00) são os mesmos. O que muda é apenas a coluna 'Condição da evidência',",
+      "que deixa de ser genérica e passa a ser escrita indicador a indicador.",
+      "",
+      "Motivo, medido e não suposto. Com a condição genérica de `nivel_atendimento`,",
+      "96% a 100% das classificações caíram em `alto` em todas as ~95 avaliações",
+      "registradas — inclusive depois das regras 5.1 a 5.4 do prompt de extração,",
+      "escritas justamente para evitar isso (o efeito foi de 53/54 para ~26/27).",
+      "A consequência é que 8 dos 12 indicadores válidos atribuem o mesmo valor aos",
+      "três provedores: entram na Equação 5, ocupam peso e não separam ninguém.",
+      "",
+      "A causa não é o modelo ser preguiçoso. É que 'atendimento substancial' é",
+      "verdadeiro para os três: AWS, Azure e GCP documentam MFA, criptografia em",
+      "repouso e trânsito, ISO/IEC 27001, backup/DR e suporte 24×7. Contra uma",
+      "condição genérica, empatar é a leitura CORRETA da evidência.",
+      "",
+      "Por isso a saída não é apertar o prompt — forçar dispersão fabricaria",
+      "diferença que o documento não sustenta, e a regra 5.4 proíbe classificar um",
+      "provedor por comparação com outro. A saída é a condição perguntar por um",
+      "fato que de fato varia entre os provedores: escopo da certificação, RPO/RTO",
+      "declarado, chave gerenciada pelo cliente, tempo de resposta por severidade.",
+      "",
+      "Cada nível abaixo é CUMULATIVO (exige o anterior) e ancorado em algo",
+      "citável do trecho — que é o que a regra 5.2 do prompt já pede."
+    ],
+    "certificacoes_conformidade": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona conformidade ou certificação sem nomear norma específica, ou nomeia uma única norma geral",
+        "moderado": "Nomeia ISO/IEC 27001 e ao menos mais uma norma ou relatório de terceira parte (ISO/IEC 27017, 27018, SOC 1/2/3)",
+        "alto": "Nomeia ISO/IEC 27001, as extensões de nuvem (27017 e/ou 27018) e relatório SOC 2, com auditoria independente declarada",
+        "completo": "Além do nível alto, evidencia programas setoriais ou governamentais (FedRAMP, PCI DSS, CSA STAR) e declara a abrangência do escopo certificado em regiões ou serviços"
+      }
+    },
+    "backup_continuidade": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona backup ou redundância sem descrever mecanismo nem objetivo de recuperação",
+        "moderado": "Descreve serviço de backup ou replicação, sem objetivo de recuperação declarado e sem abrangência geográfica",
+        "alto": "Descreve backup e recuperação com replicação entre zonas ou regiões e cita plano ou serviço gerenciado de continuidade",
+        "completo": "Além do nível alto, declara RPO e/ou RTO, ou compromisso contratual de recuperação, com escopo geográfico explícito"
+      }
+    },
+    "identidade_acesso": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona controle de acesso ou autenticação sem nomear mecanismo",
+        "moderado": "Descreve autenticação multifator (MFA) ou controle de acesso baseado em função (RBAC)",
+        "alto": "Descreve MFA e um modelo de autorização granular (RBAC e/ou ABAC) com gestão centralizada de identidades",
+        "completo": "Além do nível alto, evidencia privilégio mínimo aplicável por política, federação de identidades (SSO) e auditoria do acesso privilegiado"
+      }
+    },
+    "criptografia_protecao": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona criptografia sem distinguir repouso e trânsito e sem nomear algoritmo ou protocolo",
+        "moderado": "Declara criptografia em repouso ou em trânsito, com algoritmo ou protocolo nomeado (por exemplo AES-256 ou TLS)",
+        "alto": "Declara criptografia em repouso E em trânsito, habilitada por padrão, com gerenciamento de chaves pelo provedor",
+        "completo": "Além do nível alto, oferece chaves gerenciadas pelo cliente (CMK/BYOK) ou módulo de segurança dedicado (HSM), com rotação de chaves documentada"
+      }
+    },
+    "suporte_tecnico": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona a existência de suporte técnico sem descrever níveis nem canais de atendimento",
+        "moderado": "Descreve planos de suporte com canais definidos, sem tempo de resposta declarado",
+        "alto": "Descreve planos com tempo de resposta declarado por severidade e atendimento 24×7 em ao menos um plano",
+        "completo": "Além do nível alto, declara tempo de resposta de no máximo 15 minutos para a severidade mais crítica e atendimento técnico designado ao cliente"
+      }
+    },
+    "escalabilidade_elasticidade": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona escalabilidade ou elasticidade como característica, sem descrever mecanismo",
+        "moderado": "Descreve escalonamento manual ou provisionamento de capacidade definido pelo cliente",
+        "alto": "Descreve escalonamento automático acionado por métrica de demanda, horizontal ou vertical",
+        "completo": "Além do nível alto, evidencia escalonamento preditivo ou agendado e redução automática de recursos (scale in), com limites configuráveis"
+      }
+    },
+    "emissoes_carbono": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona preocupação com emissões ou pegada de carbono sem meta declarada",
+        "moderado": "Declara meta de redução ou de neutralidade sem prazo, ou sem informar o escopo de emissões coberto",
+        "alto": "Declara meta com prazo e escopo de emissões definidos (Escopo 1, 2 e/ou 3) e reporta emissões por metodologia identificada",
+        "completo": "Além do nível alto, apresenta resultado já alcançado no período e verificação por terceira parte ou meta validada externamente (por exemplo SBTi)"
+      }
+    },
+    "residuos_eletronicos": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona descarte ou reciclagem de equipamentos sem descrever o processo",
+        "moderado": "Descreve programa de reciclagem ou de descarte ambientalmente adequado de equipamentos",
+        "alto": "Descreve reuso ou recondicionamento de equipamentos além da reciclagem, com o processo descrito",
+        "completo": "Além do nível alto, apresenta indicador quantitativo de desvio de aterro ou de taxa de reuso, com meta declarada"
+      }
+    },
+    "circularidade": {
+      "mode": "ordinal",
+      "categories": {
+        "nao_identificado": null,
+        "baixo": 0.25,
+        "moderado": 0.5,
+        "alto": 0.75,
+        "completo": 1.0
+      },
+      "conditions": {
+        "nao_identificado": "Não há evidência documental suficiente para confirmar o atendimento",
+        "baixo": "Menciona economia circular ou prolongamento da vida útil sem descrever prática",
+        "moderado": "Descreve ao menos uma prática de prolongamento do ciclo de vida, como reuso de componentes ou recondicionamento",
+        "alto": "Descreve práticas de circularidade integradas ao ciclo de vida do equipamento, do projeto ao descarte",
+        "completo": "Além do nível alto, apresenta meta ou indicador de circularidade e reporta o resultado do período"
+      }
     }
   },
   "tie_break": {
