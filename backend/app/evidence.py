@@ -668,15 +668,30 @@ def enforce_unit_consistency(
 
 
 def _cache_coordenadas(
-    provider_id: str, dimension: str, chunks: Sequence[Dict[str, Any]], prompt: Any
-) -> Optional[Tuple[str, str, str]]:
-    """`(chave, impressão dos trechos, modelo)` — ou `None` se não houver chave estável."""
+    provider_id: str,
+    dimension: str,
+    chunks: Sequence[Dict[str, Any]],
+    prompt: Any,
+    indicators_spec: str,
+) -> Optional[Tuple[str, str, str, str]]:
+    """
+    `(chave, impressão dos trechos, modelo, impressão dos indicadores)` — ou
+    `None` se não houver chave estável.
+
+    `indicators_spec` é o bloco de indicadores como ele vai para a LLM. Entra na
+    chave porque carrega as condições da rubrica, que vêm de `scales.json` e não
+    do texto do prompt: refinar uma condição muda a resposta sem mudar
+    `prompt_version`, e sem isto o cache devolveria a leitura feita sob a regra
+    anterior como se nada tivesse mudado.
+    """
     chunk_ids = [str(c["chunk_id"]) for c in chunks if c.get("chunk_id")]
     if not chunk_ids:
         # Índice antigo, sem `chunk_id`: não há como saber se os trechos são os
         # mesmos, e uma chave frouxa devolveria a leitura de outro contexto.
         return None
     try:
+        import hashlib
+
         import db
         from config import get_settings
 
@@ -684,6 +699,7 @@ def _cache_coordenadas(
             return None
         modelo = str(get_settings().llm_model)
         impressao = db.chunks_fingerprint(chunk_ids)
+        impressao_indicadores = hashlib.sha256(indicators_spec.encode("utf-8")).hexdigest()
         chave = db.extraction_cache_key(
             provider_id,
             dimension,
@@ -691,20 +707,25 @@ def _cache_coordenadas(
             prompt.prompt_id,
             prompt.prompt_version,
             modelo,
+            impressao_indicadores,
         )
-        return chave, impressao, modelo
+        return chave, impressao, modelo, impressao_indicadores
     except Exception as exc:  # noqa: BLE001 - cache indisponível não é erro de avaliação
         logger.warning("Cache de extração indisponível: %s: %s", type(exc).__name__, exc)
         return None
 
 
 def _cache_lookup(
-    provider_id: str, dimension: str, chunks: Sequence[Dict[str, Any]], prompt: Any
+    provider_id: str,
+    dimension: str,
+    chunks: Sequence[Dict[str, Any]],
+    prompt: Any,
+    indicators_spec: str,
 ) -> Optional["DimensionEvidence"]:
-    coord = _cache_coordenadas(provider_id, dimension, chunks, prompt)
+    coord = _cache_coordenadas(provider_id, dimension, chunks, prompt, indicators_spec)
     if coord is None:
         return None
-    chave, _, _ = coord
+    chave, _, _, _ = coord
     try:
         import db
 
@@ -727,11 +748,12 @@ def _cache_store(
     chunks: Sequence[Dict[str, Any]],
     prompt: Any,
     data: "DimensionEvidence",
+    indicators_spec: str,
 ) -> None:
-    coord = _cache_coordenadas(provider_id, dimension, chunks, prompt)
+    coord = _cache_coordenadas(provider_id, dimension, chunks, prompt, indicators_spec)
     if coord is None:
         return
-    chave, impressao, modelo = coord
+    chave, impressao, modelo, impressao_indicadores = coord
     try:
         import db
 
@@ -740,6 +762,7 @@ def _cache_store(
             provider_id=provider_id,
             dimension=dimension,
             chunks_hash=impressao,
+            indicators_hash=impressao_indicadores,
             prompt_id=prompt.prompt_id,
             prompt_version=prompt.prompt_version,
             model=modelo,
@@ -831,10 +854,15 @@ async def _extract_dimension(
         # convidaria exatamente a resposta que a regra 2 do prompt proíbe.
         return [_missing(provider_id, i, "Nenhum trecho recuperado para o indicador.") for i in indicators], None
 
+    # Renderizado uma vez e reaproveitado: é o texto que vai à LLM e também o
+    # que identifica a leitura no cache. Montá-lo duas vezes abriria espaço para
+    # a chave descrever uma especificação diferente da que foi enviada.
+    indicators_spec = describe_indicators(indicators)
+
     prompt = get_prompt(PROMPT_ID).render(
         provider_name=str(provider.get("name") or provider_id),
         dimension_name=methodology.dimension_name(dimension),
-        indicators=describe_indicators(indicators),
+        indicators=indicators_spec,
         document_context=wrap_document_context(chunks, log),
     )
 
@@ -843,7 +871,7 @@ async def _extract_dimension(
     # isso, o não-determinismo residual do modelo (temperatura 0 não o elimina)
     # fazia o mesmo documento sair `FOUND` numa execução e `PARTIAL` na
     # seguinte, e a §11.1 derrubava o indicador inteiro por causa de uma célula.
-    cached = _cache_lookup(provider_id, dimension, chunks, prompt)
+    cached = _cache_lookup(provider_id, dimension, chunks, prompt, indicators_spec)
     if cached is not None:
         return _findings_from_raw(
             cached, indicators, provider_id, chunks, methodology, log
@@ -866,7 +894,7 @@ async def _extract_dimension(
         motivo = f"Extração indisponível ({result.run.status})."
         return [_missing(provider_id, i, motivo) for i in indicators], result.run
 
-    _cache_store(provider_id, dimension, chunks, prompt, result.data)
+    _cache_store(provider_id, dimension, chunks, prompt, result.data, indicators_spec)
     return _findings_from_raw(
         result.data, indicators, provider_id, chunks, methodology, log
     ), result.run
