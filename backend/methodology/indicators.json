@@ -113,7 +113,7 @@
       "name": "Redução de emissões de gases de efeito estufa",
       "question_id": "sust_q3",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "emissoes_carbono",
       "_decisao": "Era quantitativo (CUE / intensidade de carbono, Quadro 22) e passou a qualitativo — a alternativa que o _todo anterior já previa. O motivo é empírico: em seis execuções sobre a base documental completa, os três provedores foram INVALID em todas, sempre por unidade. O Quadro 22 pede emissão ÷ energia dos equipamentos, e nenhum dos relatórios publica essa razão: eles trazem total absoluto (tCO2e) ou percentual de redução. Um indicador que nunca produz valor não é rigor, é peso morto — sai do conjunto comparável em toda avaliação e seu peso é redistribuído em silêncio para os outros quatro da dimensão. Como qualitativo, o que se avalia é o compromisso publicado (meta, prazo, escopos cobertos, verificação por terceiros), pela mesma rubrica do Quadro 23 já usada em resíduos eletrônicos e circularidade.",
       "_nota_limite": "A troca tem custo e ele deve ser dito: deixa de ser medida física e vira classificação de compromisso, então dois provedores com metas parecidas empatam. Se a dissertação vier a exigir a métrica do Quadro 22, o caminho é voltar a quantitativo E acrescentar ao corpus fontes que publiquem intensidade de carbono — sem as fontes, reverter só recria o INVALID.",
       "search_terms": [
@@ -148,9 +148,33 @@
       "dimension": "sustainability",
       "name": "Gestão de resíduos eletrônicos",
       "question_id": "sust_q4",
-      "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "data_type": "quantitative",
+      "direction": "benefit",
+      "expected_units": [
+        "%"
+      ],
+      "evidence_hint": "é a TAXA DE DESVIO DE ATERRO (waste diversion rate) das operações do provedor, em %: a fração do resíduo que deixou de ir para aterro. Use o valor REALIZADO no período mais recente, nunca a meta futura — 'meta de 90% até 2030' não é este indicador, é compromisso. Também não confunda com percentual de material reciclado no produto, com taxa de reuso de servidores nem com fração de embalagem eliminada.",
+      "_nota": [
+        "Era qualitativo, com rubrica de nível de atendimento, e dava `alto` para",
+        "os três provedores em toda avaliação medida — ocupava peso na Equação 5",
+        "sem participar da ordenação.",
+        "",
+        "Passou a quantitativo porque os três publicam a mesma grandeza, em",
+        "percentual e com série anual: AWS 85% (2024), Google 84% (data centers,",
+        "2024) e Azure em torno de 82% realizado. A pergunta do Bloco A (questão 4",
+        "do Quadro 25) não muda — o que muda é a regra de tratamento, que o",
+        "Quadro 24 já admite mista em outros indicadores.",
+        "",
+        "A rubrica `residuos_eletronicos` continua definida em scales.json, sem uso,",
+        "para que a reversão seja só trocar `data_type` de volta."
+      ],
       "search_terms": [
+        "waste diversion rate",
+        "landfill diversion rate",
+        "taxa de desvio de aterro",
+        "diverted from landfill",
+        "zero waste to landfill",
+        "desvio de resíduos",
         "e-waste",
         "electronic waste",
         "recycling",
@@ -167,7 +191,7 @@
         "quadro_24": [
           "Práticas ambientais e compromissos"
         ],
-        "evidence_example": "programa de reciclagem e descarte documentado",
+        "evidence_example": "taxa de desvio de aterro = 85%",
         "_nota": "Vem do questionário (Bloco A, questão 4) e da RSL de sustentabilidade; não tem linha própria no Quadro 22."
       }
     },
@@ -177,7 +201,7 @@
       "name": "Circularidade e ciclo de vida dos equipamentos",
       "question_id": "sust_q5",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "circularidade",
       "search_terms": [
         "circular economy",
         "economia circular",
@@ -236,7 +260,7 @@
       "name": "Suporte técnico e resposta a incidentes",
       "question_id": "perf_q2",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "suporte_tecnico",
       "_todo": "Categorias resolvidas pelo Quadro 23. Em aberto: se a dissertação optar por comparar tempo de resposta contratual, vira quantitativo com direction 'minimize'.",
       "search_terms": [
         "technical support",
@@ -296,7 +320,7 @@
       "name": "Escalabilidade e elasticidade",
       "question_id": "perf_q4",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "escalabilidade_elasticidade",
       "search_terms": [
         "scalability",
         "elasticity",
@@ -327,7 +351,7 @@
       "name": "Certificações e conformidade",
       "question_id": "sec_q1",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "certificacoes_conformidade",
       "_nota": "A §41.1 e o GUARDRAIL 5 valem aqui: mencionar uma norma não é possuir a certificação. A rubrica precisa distinguir os dois casos.",
       "search_terms": [
         "ISO/IEC 27001",
@@ -363,7 +387,7 @@
       "name": "Backup, recuperação de desastres e continuidade",
       "question_id": "sec_q2",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "backup_continuidade",
       "_todo": "Categorias resolvidas pelo Quadro 23. Em aberto: a §8.1 admite RPO/RTO como quantitativos 'quando comparáveis' — se a dissertação fixar isso, o indicador se desdobra.",
       "search_terms": [
         "backup",
@@ -393,7 +417,7 @@
       "name": "Identidade, autenticação e controle de acesso",
       "question_id": "sec_q3",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "identidade_acesso",
       "search_terms": [
         "IAM",
         "identity and access management",
@@ -426,7 +450,7 @@
       "name": "Proteção de dados e criptografia",
       "question_id": "sec_q4",
       "data_type": "qualitative",
-      "rubric": "nivel_atendimento",
+      "rubric": "criptografia_protecao",
       "_nota": "A §41.1 vale aqui: SHA-1/SHA-2 são funções de hash, não criptografia. A presença de 'SHA-256' não sustenta 'dados criptografados'.",
       "search_terms": [
         "encryption at rest",
