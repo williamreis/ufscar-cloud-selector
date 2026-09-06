@@ -72,6 +72,30 @@ def test_chave_muda_com_a_versao_do_prompt():
     assert v5 != v6
 
 
+def test_chave_muda_com_a_especificacao_dos_indicadores():
+    """
+    As condições da rubrica moram em `scales.json`, não no texto do prompt.
+
+    Refinar a condição de um nível do Quadro 23 muda o que a LLM responde sem
+    mudar `prompt_version` — e, enquanto a chave não cobria isso, o cache
+    devolvia a classificação feita sob a regra anterior. O sintoma era pior que
+    a falha: o refinamento parecia não ter efeito nenhum.
+    """
+    generica = db.extraction_cache_key("aws", "security", "h", "P", "6", "m", "spec-generica")
+    especifica = db.extraction_cache_key("aws", "security", "h", "P", "6", "m", "spec-especifica")
+    assert generica != especifica
+
+
+def test_chave_sem_especificacao_e_estavel():
+    """
+    O parâmetro tem default para não invalidar por engano quem chama com os seis
+    campos antigos — mas duas chamadas sem ele continuam batendo entre si.
+    """
+    assert db.extraction_cache_key("aws", "security", "h", "P", "6", "m") == (
+        db.extraction_cache_key("aws", "security", "h", "P", "6", "m", "")
+    )
+
+
 def test_chave_muda_com_o_modelo():
     a = db.extraction_cache_key("aws", "security", "h", "P", "6", "gpt-4o-mini")
     b = db.extraction_cache_key("aws", "security", "h", "P", "6", "nemotron")

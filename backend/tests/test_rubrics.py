@@ -75,11 +75,53 @@ def test_condicoes_da_evidencia_sao_as_do_quadro_23(rubrica, nivel, condicao):
     assert rubrica.condition_for(nivel) == condicao
 
 
-def test_todo_indicador_qualitativo_usa_a_rubrica_do_quadro_23(metodologia):
+def test_todo_indicador_qualitativo_usa_a_escala_do_quadro_23(metodologia):
+    """
+    A garantia é sobre a **escala**, não sobre o nome da rubrica.
+
+    Cada indicador qualitativo passou a ter rubrica própria, porque a condição
+    genérica do quadro classificava os três provedores no mesmo nível em 96% a
+    100% das células — e um indicador que dá o mesmo valor a todos ocupa peso na
+    Equação 5 sem participar da ordenação. O que as rubricas específicas mudam é
+    a coluna "Condição da evidência"; os níveis e os valores continuam sendo os
+    do Quadro 23, e é isso que este teste protege.
+    """
     qualitativos = [i for i in metodologia.indicators if i.is_qualitative]
     assert qualitativos
     assert all(i.rubric is not None for i in qualitativos)
-    assert {i.rubric.name for i in qualitativos} == {"nivel_atendimento"}
+    for indicador in qualitativos:
+        assert dict(indicador.rubric.categories) == QUADRO_23_VALORES, (
+            f"{indicador.id}: a rubrica {indicador.rubric.name!r} alterou a escala "
+            "do Quadro 23 — os níveis e os valores não podem mudar."
+        )
+
+
+def test_cada_indicador_qualitativo_tem_rubrica_propria(metodologia):
+    """
+    Duas rubricas iguais em condição voltariam a empatar os provedores no mesmo
+    nível: o refinamento só existe enquanto as condições forem distintas.
+    """
+    qualitativos = [i for i in metodologia.indicators if i.is_qualitative]
+    nomes = [i.rubric.name for i in qualitativos]
+    assert len(set(nomes)) == len(nomes), f"rubrica reaproveitada entre indicadores: {nomes}"
+
+
+def test_rubricas_especificas_nao_repetem_a_condicao_generica(metodologia):
+    """
+    Se a condição específica for igual à do quadro, nada mudou de fato — e o
+    indicador continua sem discriminar, agora com outro nome.
+    """
+    pontuaveis = [n for n, v in QUADRO_23_VALORES.items() if v is not None]
+    for indicador in (i for i in metodologia.indicators if i.is_qualitative):
+        iguais = [
+            nivel
+            for nivel in pontuaveis
+            if indicador.rubric.condition_for(nivel) == QUADRO_23_CONDICOES[nivel]
+        ]
+        assert not iguais, (
+            f"{indicador.id}: os níveis {iguais} repetem a condição genérica do "
+            "Quadro 23 e não distinguem este indicador de nenhum outro."
+        )
 
 
 def test_rubricas_nao_estao_mais_provisorias():
@@ -209,9 +251,27 @@ def test_prompt_leva_a_condicao_de_cada_nivel(qualitativo):
     """
     Sem a condição, "escolha entre baixo, moderado, alto e completo" não é uma
     regra — é um rótulo solto, e a classificação vira opinião do modelo.
+
+    A condição cobrada é a **do indicador**, não a genérica do quadro: é ela que
+    o modelo lê, e trocá-la é o mecanismo pelo qual a rubrica passa a distinguir
+    um provedor do outro.
     """
     import evidence
 
     texto = evidence.describe_indicators([qualitativo])
-    for nivel, condicao in QUADRO_23_CONDICOES.items():
+    for nivel in qualitativo.rubric.allowed_categories:
+        condicao = qualitativo.rubric.condition_for(nivel)
+        assert condicao, f"nível {nivel} sem condição na rubrica {qualitativo.rubric.name!r}"
         assert f"- {nivel}: {condicao}" in texto
+
+
+def test_prompt_leva_a_condicao_de_todos_os_qualitativos(metodologia):
+    """A regra vale para os nove, não só para o indicador da fixture."""
+    import evidence
+
+    for indicador in (i for i in metodologia.indicators if i.is_qualitative):
+        texto = evidence.describe_indicators([indicador])
+        for nivel in indicador.rubric.allowed_categories:
+            condicao = indicador.rubric.condition_for(nivel)
+            assert condicao, f"{indicador.id}: nível {nivel} sem condição"
+            assert f"- {nivel}: {condicao}" in texto

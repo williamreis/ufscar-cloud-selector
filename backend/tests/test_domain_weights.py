@@ -146,6 +146,24 @@ def test_dimensao_toda_irrelevante_ainda_produz_pesos(metodologia):
     assert conjunto.local_weight_sum("security") == pytest.approx(1.0)
 
 
+
+def _rubricas_minimas() -> dict:
+    """
+    `default_rubrics` cobrindo as rubricas que o `indicators.json` real referencia.
+
+    Estes testes trocam a escala de relevância e carregam os indicadores de
+    verdade. A rubrica não importa para o que eles medem, mas precisa existir, ou
+    o carregador recusa a configuração inteira. Derivar os nomes do próprio
+    arquivo evita que acrescentar uma rubrica quebre um teste que não trata dela
+    — foi o que aconteceu quando cada indicador qualitativo ganhou a sua.
+    """
+    from config import get_settings
+
+    indicadores = json.loads(get_settings().indicators_path.read_text(encoding="utf-8"))
+    nomes = {i["rubric"] for i in indicadores["indicators"] if i.get("rubric")}
+    return {nome: {"mode": "ordinal", "categories": {"completo": 1.0}} for nome in nomes}
+
+
 def test_denominador_zerado_pede_revisao_em_vez_de_dividir_por_zero(tmp_path):
     """
     Guarda de mecanismo, independente da escala em vigor: se uma configuração
@@ -157,7 +175,7 @@ def test_denominador_zerado_pede_revisao_em_vez_de_dividir_por_zero(tmp_path):
             "values": {"irrelevante": 0, "nao_sei": None},
             "labels": {IRRELEVANTE: "irrelevante", NAO_SEI: "nao_sei"},
         },
-        "default_rubrics": {"nivel_atendimento": {"mode": "ordinal", "categories": {"completo": 1.0}}},
+        "default_rubrics": _rubricas_minimas(),
         "ahp": {"weight_method": "column_mean", "random_index": {"3": 0.58}},
     }
     caminho = tmp_path / "scales.json"
@@ -263,7 +281,7 @@ def test_mudar_a_escala_muda_os_pesos_sem_tocar_no_codigo(tmp_path, metodologia)
                 NAO_SEI: "nao_sei",
             },
         },
-        "default_rubrics": {"nivel_atendimento": {"mode": "ordinal", "categories": {"completo": 1.0}}},
+        "default_rubrics": _rubricas_minimas(),
         "ahp": {"weight_method": "column_mean", "random_index": {"3": 0.58}},
     }
     caminho = tmp_path / "scales.json"
@@ -350,7 +368,7 @@ def test_fingerprint_muda_quando_a_escala_muda(tmp_path, metodologia):
                     "values": {"decisivo": 9},
                     "labels": {DECISIVO: "decisivo"},
                 },
-                "default_rubrics": {"nivel_atendimento": {"mode": "ordinal", "categories": {"completo": 1.0}}},
+                "default_rubrics": _rubricas_minimas(),
                 "ahp": {"weight_method": "column_mean", "random_index": {"3": 0.58}},
             }
         ),
