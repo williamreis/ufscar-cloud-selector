@@ -114,6 +114,20 @@ def main(argv: list) -> int:
 
     print(f"\n{result['chunks']} chunks indexados · {registered} documento(s) registrado(s).")
 
+    # Conferência de fechamento. Numa reconstrução, o índice tem de conter
+    # exatamente o que acabou de ser indexado; num acréscimo, o que havia mais o
+    # que entrou. Divergência para mais significa cópia duplicada — o modo de
+    # falha que não levanta erro nenhum e só aparece semanas depois, como
+    # indicador que sumiu do ranking.
+    no_indice = rag.count_chunks()
+    esperado = result["chunks"] if ingestao_completa and not args.sem_reset else None
+    if esperado is not None and no_indice != esperado:
+        print(
+            f"\nAVISO: o índice tem {no_indice} trechos, mas esta ingestão gravou "
+            f"{esperado}. A diferença ({no_indice - esperado}) indica vetores "
+            "duplicados — refaça com o índice limpo."
+        )
+
     if result["unassigned_files"]:
         print(
             "\nSem provedor identificável no nome (serão indexados, mas não viram "

@@ -311,6 +311,41 @@ def test_limitacao_nao_penaliza_a_pontuacao(client):
         assert sum(contribuicoes) == pytest.approx(linha["score"], abs=1e-6)
 
 
+def test_score_fecha_pela_dimensao_com_o_peso_efetivo(client):
+    """
+    §5.5: a conta exibida tem de poder ser refeita à mão.
+
+    Lida por dimensão, a Equação 5 é
+
+        S_i = Σ_d [ desempenho_d(i) × Σ_{j∈d} w'_j ]
+
+    e o peso que fecha essa soma é o **efetivo** (§11.2), não o do AHP. Os dois
+    só coincidem quando nada é excluído: basta um indicador sair para a
+    renormalização mudar o peso com que cada dimensão entra. O relatório exibia
+    o peso do AHP e afirmava ser ele o usado, e por isso a conta não fechava
+    para quem tentasse conferir.
+    """
+    corpo = client.post("/api/recommend", json=_envio()).json()
+    sintese = corpo["synthesis"]
+
+    efetivos_por_dimensao = sintese["dimension_effective_weights"]
+    assert sum(efetivos_por_dimensao.values()) == pytest.approx(1.0, abs=1e-6)
+
+    for provedor in sintese["providers"]:
+        soma = 0.0
+        for dimensao, celula in provedor["cells"].items():
+            # Dimensão sem indicador válido não tem desempenho medido: não entra
+            # como zero, simplesmente não tem termo.
+            if celula.get("performance") is None:
+                assert celula["effective_weight"] == pytest.approx(0.0, abs=1e-6)
+                continue
+            assert celula["effective_weight"] == pytest.approx(
+                efetivos_por_dimensao[dimensao], abs=1e-6
+            )
+            soma += celula["performance"] * celula["effective_weight"]
+        assert soma == pytest.approx(provedor["score"], abs=1e-6)
+
+
 # --- Porta da consistência (§4.2.3) ----------------------------------------
 
 

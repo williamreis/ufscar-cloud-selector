@@ -119,6 +119,13 @@ export type EvidenceStatus = "FOUND" | "PARTIAL" | "NOT_FOUND" | "INVALID";
 export interface SynthesisCell {
   /** Peso da dimensão vindo do AHP */
   weight: number;
+  /**
+   * Peso com que a dimensão **efetivamente** entrou na soma: os pesos dos seus
+   * indicadores válidos, já renormalizados sobre o conjunto comparável (§11.2).
+   * Difere de `weight` sempre que algum indicador é excluído — e é este que
+   * fecha a conta.
+   */
+  effective_weight?: number;
   /** Soma das contribuições dos indicadores da dimensão */
   contribution: number;
   /**
@@ -152,6 +159,9 @@ export interface SynthesisIndicator {
   rejection: string | null;
   source_chunk_id: string | null;
   source_document: string | null;
+  /** Ano do documento que sustenta a evidência. Duas medições de anos distintos
+   *  não são comparáveis, e o gestor precisa ver de que período é cada número. */
+  source_year: number | null;
   /** Entrou no conjunto comparável V (§11.1) */
   in_comparison: boolean;
   excluded_reason: string | null;
@@ -168,8 +178,14 @@ export interface SynthesisResult {
   mode: string;
   equation: string;
   criteria_order: string[];
-  /** Pesos das dimensões, do AHP */
+  /** Pesos das dimensões, do AHP — o que o gestor declarou */
   dimension_weights: Record<string, number>;
+  /**
+   * Pesos das dimensões como entraram na soma, após a renormalização da §11.2.
+   * Opcional: relatórios gravados antes deste campo não o têm, e a área de
+   * gestão os reexibe a partir do `response_json` original.
+   */
+  dimension_effective_weights?: Record<string, number>;
   /** Pesos dos indicadores já renormalizados sobre o conjunto comparável */
   effective_weights: Record<string, number>;
   valid_indicators: string[];
@@ -551,6 +567,12 @@ export interface RagStatus {
   unassigned_files: string[];
   documents_indexed: number;
   chunks_total: number;
+  /** Trechos que os documentos registrados declaram ter gerado. */
+  chunks_registered: number;
+  /** Vetores no índice além do declarado — cópias de uma reingestão anterior. */
+  chunks_duplicated: number;
+  /** O índice tem cópias repetidas: elas disputam as vagas do `top_k`. */
+  index_duplicated: boolean;
   providers: { id: string; name: string; chunks: number }[];
 }
 

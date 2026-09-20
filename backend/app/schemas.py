@@ -280,6 +280,34 @@ class QuestionnaireResponse(BaseModel):
             )
         return pairs
 
+    def pairwise_question_labels(self) -> set:
+        """
+        Enunciados das comparações do Bloco D.
+
+        Serve para **retirá-las** do texto que alimenta o refinamento das
+        consultas. A §4.5.1 e a Figura 33 atribuem funções separadas aos blocos:
+        A–C formam o perfil de relevância, D é a elicitação par a par que vira
+        peso pelo AHP, e E é o contexto semântico que "não altera os pesos [...]
+        sendo utilizado exclusivamente para contextualizar e direcionar a
+        recuperação". O Bloco D não tem papel na recuperação.
+
+        Enquanto ele viajava junto, tinha: medido entre dois envios que diferiam
+        **apenas** nas comparações par a par, os termos refinados mudaram, os
+        trechos recuperados para eficiência energética mudaram com eles e a
+        releitura da dimensão trocou duas células do Google entre `FOUND` e
+        `NOT_FOUND`. Ou seja, o peso declarado pelo gestor alterava **quais
+        documentos eram lidos** — por um caminho que o texto diz não existir.
+
+        A justificativa textual continua recebendo o bloco inteiro: explicar o
+        resultado exige conhecer as prioridades. O que não pode é elas mexerem na
+        busca.
+        """
+        return {
+            _clean_label(a.question_text) or a.question_id
+            for a in self.answers
+            if a.pairwise is not None or a.question_id in LEGACY_PAIRWISE_QUESTIONS
+        }
+
     def free_texts_dict(self) -> Dict[str, str]:
         """Somente as respostas dissertativas, chaveadas pelo enunciado."""
         return {

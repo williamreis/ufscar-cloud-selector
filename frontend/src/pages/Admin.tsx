@@ -778,6 +778,25 @@ function RagPanel({ onError }: { onError: (err: unknown) => void }) {
         </div>
       )}
 
+      {status?.index_duplicated && !status.embedding_mismatch && (
+        <div
+          role="alert"
+          className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm leading-relaxed text-amber-900"
+        >
+          <p className="font-semibold">
+            O índice tem {status.chunks_duplicated} trecho(s) duplicado(s).
+          </p>
+          <p className="mt-1">
+            Os documentos registrados declaram {status.chunks_registered} trechos, mas o índice
+            guarda {status.chunks_total}. A ingestão acrescenta vetores ao índice existente em vez
+            de substituí-los, então reingerir tudo sem limpar antes deixa cada trecho gravado duas
+            vezes. Nada quebra — e é esse o problema: as cópias disputam as mesmas vagas da busca,
+            de modo que um indicador recupera menos trechos distintos do que deveria e a evidência
+            pode não chegar à análise. Limpe a base e reingira, ou use a seleção por arquivo.
+          </p>
+        </div>
+      )}
+
       {resetResult && (
         <div
           role="status"

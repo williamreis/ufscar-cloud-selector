@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import audit
 import auth
@@ -20,6 +20,7 @@ from ahp import derive_criteria_weights
 from consistency_repair import suggest_minimal_revision
 from config import get_settings
 from domain import (
+    EXCLUDED_NON_DISCRIMINATIVE,
     analyze_sensitivity,
     build_comparability_set,
     compute_scores,
@@ -273,8 +274,19 @@ async def recommend(q: QuestionnaireResponse):
     #     aos indicadores já definidos. Eles direcionam a recuperação e nada
     #     mais: os pesos das dimensões e os pesos locais já foram calculados
     #     acima, a partir dos blocos A–D, e não são revisitados.
+    #     O Bloco D não entra aqui. Ele é a elicitação par a par que o AHP
+    #     converte em peso, e a §4.5.1 reserva o direcionamento da recuperação ao
+    #     Bloco E. Enquanto as comparações viajavam neste texto, mudar apenas a
+    #     prioridade declarada mudava os termos refinados, os trechos recuperados
+    #     e, por consequência, a evidência extraída — o peso do gestor escolhendo
+    #     quais documentos seriam lidos.
+    rotulos_bloco_d = q.pairwise_question_labels()
+    qa_para_recuperacao = [
+        pair for pair in safe_qa_pairs if pair.get("pergunta") not in rotulos_bloco_d
+    ]
+
     query_hints, refinement_run = await query_refinement.refine_queries(
-        qa_pairs=safe_qa_pairs,
+        qa_pairs=qa_para_recuperacao,
         indicators=weighted_indicators,
         guardrail_log=guardrail_log,
     )
@@ -386,14 +398,35 @@ async def recommend(q: QuestionnaireResponse):
     # §11.1: indicador sem valor comparável em todos os provedores sai da conta.
     # A exclusão não penaliza ninguém, mas encolhe a base do ranking — e o gestor
     # precisa saber quanto do modelo efetivamente pesou no resultado.
-    if comparability.excluded:
-        nomes_excluidos = ", ".join(
-            methodology.by_id(i).name for i in list(comparability.excluded)[:4]
-        )
-        reticencias = "…" if len(comparability.excluded) > 4 else ""
+    # Duas famílias de exclusão, e dizê-las na mesma frase seria falso: uma é
+    # lacuna documental ("não se sabe"), a outra é resultado da avaliação ("os
+    # três atendem igualmente"). A segunda não é limitação da base de evidência
+    # e não pede nenhuma ação de quem lê — pede só que não se leia como diferença
+    # o que o cálculo não separou.
+    def _nomes(ids: Sequence[str]) -> str:
+        nomes = ", ".join(methodology.by_id(i).name for i in list(ids)[:4])
+        return f"{nomes}{'…' if len(ids) > 4 else ''}"
+
+    sem_evidencia = [
+        i
+        for i, motivo in comparability.excluded.items()
+        if motivo != EXCLUDED_NON_DISCRIMINATIVE
+    ]
+    equivalentes = [
+        i
+        for i, motivo in comparability.excluded.items()
+        if motivo == EXCLUDED_NON_DISCRIMINATIVE
+    ]
+    if sem_evidencia:
         limitations.append(
-            f"{len(comparability.excluded)} indicador(es) fora da comparação por falta de "
-            f"evidência comparável em todos os provedores ({nomes_excluidos}{reticencias})."
+            f"{len(sem_evidencia)} indicador(es) fora da comparação por falta de "
+            f"evidência comparável em todos os provedores ({_nomes(sem_evidencia)})."
+        )
+    if equivalentes:
+        limitations.append(
+            f"{len(equivalentes)} indicador(es) deram a mesma nota a todos os provedores e "
+            f"não entraram na soma, por não alterarem a ordem do ranking "
+            f"({_nomes(equivalentes)}). A nota de cada um continua no relatório."
         )
     if not comparability.valid:
         limitations.append(

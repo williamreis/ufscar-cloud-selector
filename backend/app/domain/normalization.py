@@ -3,10 +3,14 @@ Desempenho dos provedores: da evidência ao valor comparável (§9, §10 e §11)
 
 Três regras da diretriz moram aqui, e todas as três são sobre **não inventar**:
 
-  - **§9.3 — divisão indefinida não vira número.** Quando a fórmula fica
-    matematicamente indefinida (todo mundo com o mesmo valor a zero, máximo
-    zero), o indicador é marcado `non_discriminative` ou `invalid_for_comparison`
-    e sai da comparação. Não há valor de recurso.
+  - **§9.3 — o indicador que não separa ninguém não entra na conta.** Na forma
+    original: quando a fórmula fica indefinida (todos com o mesmo valor a zero,
+    máximo zero), o indicador é marcado `non_discriminative` ou
+    `invalid_for_comparison` e sai. Não há valor de recurso. A regra vale também
+    quando a fórmula é definida mas devolve o mesmo valor para todas as
+    alternativas — um indicador assim soma a mesma parcela a todas as pontuações
+    e é incapaz de mudar a ordem, só comprime a distância entre elas. Ele sai da
+    soma e permanece no relatório, com a nota que obteve.
 
   - **§11 — ausência de evidência não é desempenho zero.** `NOT_FOUND` retira o
     indicador do conjunto comparável; não zera a nota de ninguém. Zero afirmaria
@@ -37,6 +41,11 @@ STATUS_FOUND = "FOUND"
 STATUS_PARTIAL = "PARTIAL"
 STATUS_NOT_FOUND = "NOT_FOUND"
 STATUS_INVALID = "INVALID"
+
+# Abaixo desta diferença dois valores normalizados são o mesmo valor. Existe
+# para não ler como "diferença" o resíduo de ponto flutuante de uma divisão:
+# x/max com x == max nem sempre devolve exatamente 1,0.
+SAME_VALUE_EPS = 1e-9
 
 # Motivos pelos quais um indicador fica fora do conjunto comparável.
 EXCLUDED_NO_EVIDENCE = "no_evidence"
@@ -236,6 +245,46 @@ def normalize_values(
 # ---------------------------------------------------------------------------
 
 
+def _nao_discriminam(
+    valid: Sequence[str],
+    normalized: Sequence[NormalizedPerformance],
+    provedores: Sequence[str],
+) -> List[str]:
+    """
+    Indicadores válidos cujo valor normalizado é o mesmo para todas as
+    alternativas — e que por isso não podem mudar a ordem do ranking.
+
+    A demonstração é curta. Se o indicador `k` vale `c` para todos, então
+
+        S_i = Σ_{j≠k} w'_j r_ij + w'_k c
+
+    e retirar `k` com a renormalização da §11.2 dá
+
+        S'_i = (S_i − w'_k c) / (1 − w'_k)
+
+    que é afim crescente em `S_i`: a ordem entre os provedores é idêntica. O que
+    muda é a escala — as pontuações deixam de ser puxadas para perto umas das
+    outras pela parcela constante.
+    """
+    por_indicador: Dict[str, Dict[str, float]] = {}
+    for entrada in normalized:
+        if entrada.normalized_value is None:
+            continue
+        por_indicador.setdefault(entrada.indicator_id, {})[entrada.provider_id] = (
+            entrada.normalized_value
+        )
+
+    iguais: List[str] = []
+    for indicator_id in valid:
+        notas = por_indicador.get(indicator_id, {})
+        if len(notas) < len(provedores):
+            continue
+        serie = list(notas.values())
+        if max(serie) - min(serie) <= SAME_VALUE_EPS:
+            iguais.append(indicator_id)
+    return iguais
+
+
 def build_comparability_set(
     performances: Sequence[PerformanceInput],
     provider_ids: Sequence[str],
@@ -281,9 +330,25 @@ def build_comparability_set(
 
         faltando = [pid for pid in provedores if pid not in usaveis]
         if faltando:
-            motivo = (
-                EXCLUDED_NO_EVIDENCE if not usaveis else EXCLUDED_MISSING_FOR_SOME
+            # Um indicador invalidado a montante — unidade divergente (§4.4.1.1)
+            # ou safra divergente — chega aqui sem nenhum valor utilizável, e
+            # relatá-lo como "sem evidência" mentiria: a evidência existe, foi a
+            # comparabilidade que a recusou. Distinguir importa porque as duas
+            # situações pedem ações opostas do gestor: uma é buscar documento,
+            # a outra é buscar documento **do mesmo período ou grandeza**.
+            # Exige que **todos** estejam invalidados, que é como as regras de
+            # comparabilidade agem: elas retiram o indicador inteiro. Um único
+            # INVALID no meio de ausências é outra história — ali a maioria não
+            # tem documento, e "valores incomparáveis" esconderia isso.
+            todos_invalidos = bool(entradas) and all(
+                entrada.status == STATUS_INVALID for entrada in entradas.values()
             )
+            if usaveis:
+                motivo = EXCLUDED_MISSING_FOR_SOME
+            elif todos_invalidos:
+                motivo = EXCLUDED_INVALID_FOR_COMPARISON
+            else:
+                motivo = EXCLUDED_NO_EVIDENCE
             excluded[indicator.id] = motivo
             for pid in provedores:
                 entrada = entradas.get(pid)
@@ -329,6 +394,35 @@ def build_comparability_set(
                 )
             )
 
+    # Indicador que dá o mesmo valor a todos sai da Equação 5 (ver `comparability`
+    # no scales.json). A ordem do ranking não muda — a demonstração está em
+    # `_nao_discriminam` —, mas a margem deixa de ser comprimida pela parcela
+    # constante que ele soma a todas as pontuações.
+    #
+    # Duas condições antes de aplicar:
+    #
+    #   - **pelo menos duas alternativas.** Com uma só, todo indicador é
+    #     trivialmente "igual para todos" e a regra esvaziaria o conjunto. Não há
+    #     comparação a ser feita ali, e não é papel desta regra dizer isso.
+    #
+    #   - **pelo menos um indicador que separe.** Se nenhum separa, o conjunto
+    #     ficaria vazio e todos pontuariam 0 — que o relatório leria como
+    #     "nenhum provedor atende" quando o fato é o oposto: atendem igualmente.
+    #     Acontece: 4 das avaliações já gravadas não têm nenhum indicador que
+    #     separe os provedores. Nesse caso o conjunto fica como está e o empate
+    #     é declarado pela regra de empate, que é onde ele pertence.
+    if methodology.exclude_non_discriminative and len(provedores) > 1:
+        iguais = _nao_discriminam(valid, normalized, provedores)
+        if iguais and len(iguais) < len(valid):
+            sem_efeito = set(iguais)
+            valid = [j for j in valid if j not in sem_efeito]
+            for indicator_id in iguais:
+                excluded[indicator_id] = EXCLUDED_NON_DISCRIMINATIVE
+
+    # `normalized` guarda o valor mesmo dos indicadores que saíram por não
+    # discriminar: o relatório precisa mostrar QUAL foi a nota igual. É o que
+    # separa "os três estão em alto" de "não se sabe" — e só a primeira é
+    # informação para quem decide.
     return ComparabilitySet(
         valid=tuple(valid), excluded=dict(excluded), normalized=tuple(normalized)
     )
@@ -358,6 +452,7 @@ def renormalize_weights(
 
 
 __all__ = [
+    "SAME_VALUE_EPS",
     "EXCLUDED_INVALID_FOR_COMPARISON",
     "EXCLUDED_MISSING_FOR_SOME",
     "EXCLUDED_NON_DISCRIMINATIVE",

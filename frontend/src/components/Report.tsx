@@ -25,7 +25,7 @@ import {
 import EvidenceCard from "./EvidenceCard";
 import AhpAudit from "./AhpAudit";
 import IndicatorWeights from "./IndicatorWeights";
-import SynthesisAudit from "./SynthesisAudit";
+import SynthesisAudit, { EXCLUSION_REASONS, appliedDimensionWeights } from "./SynthesisAudit";
 
 const CRITERIA_LABELS: Record<string, string> = {
   sustainability: "Sustentabilidade",
@@ -58,6 +58,15 @@ function providerColor(id: string, idx: number): string {
 
 const fmt3 = (v: unknown) => Number(v).toFixed(3);
 const fmtPct = (v: unknown) => `${(Number(v) * 100).toFixed(0)}%`;
+const fmtPct1 = (v: unknown) => `${(Number(v) * 100).toFixed(1)}%`;
+// Quatro casas nos fatores da conferência, três no resultado. Com três casas
+// nos fatores o produto chega a cair do outro lado do arredondamento do score,
+// e uma linha de conferência que não fecha é pior que nenhuma.
+const fmt4 = (v: unknown) => Number(v).toFixed(4);
+
+// Diferença entre o peso do AHP e o peso aplicado que vale a pena explicar —
+// meio ponto percentual some no arredondamento da exibição.
+const WEIGHT_SHIFT_MIN = 0.005;
 
 const REPORT_PARTS = [
   {
@@ -151,6 +160,53 @@ export default function Report({
   const providersWithoutEvidence = Object.entries(evidences)
     .filter(([, docs]) => docs.length === 0)
     .map(([id]) => id);
+
+  // Peso com que cada dimensão ENTROU na soma. Não é o peso do AHP sempre que
+  // algum indicador é excluído: a §11.2 redistribui o peso dele entre os que
+  // ficaram, e a dimensão que perdeu indicador encolhe enquanto as outras
+  // crescem. O card dizia usar os pesos do AHP e exibia esses — a conta não
+  // fechava para quem tentasse refazê-la à mão, que é o que a §5.5 promete.
+  const dimOrder = synthesis?.criteria_order ?? Object.keys(cw);
+  const appliedWeights = synthesis ? appliedDimensionWeights(synthesis) : null;
+  const shiftedDimensions =
+    appliedWeights === null
+      ? []
+      : dimOrder.filter(
+          (d) => Math.abs((appliedWeights[d] ?? 0) - (cw[d] ?? 0)) >= WEIGHT_SHIFT_MIN,
+        );
+  // Uma linha por provedor, na ordem do ranking: os fatores da própria conta.
+  const closingRows = (synthesis?.providers ?? []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    score: p.score,
+    terms: dimOrder
+      .map((d) => ({
+        dimension: d,
+        performance: p.cells[d]?.performance,
+        weight: appliedWeights?.[d] ?? 0,
+      }))
+      // Dimensão sem desempenho medido não tem termo — não entra como zero.
+      .filter((t): t is { dimension: string; performance: number; weight: number } =>
+        typeof t.performance === "number" && t.weight > 0,
+      ),
+  }));
+  // Indicadores que saíram da conta: a explicação de por que os pesos mudaram.
+  // O motivo vai junto porque eles não são equivalentes — "nenhum provedor
+  // documenta" e "falta em algum provedor" pedem ações opostas de quem lê, e
+  // uma frase única para os dois casos seria a mesma imprecisão que este bloco
+  // existe para corrigir.
+  const excludedItems = (synthesis?.providers[0]?.indicators ?? [])
+    .filter((i) => !i.in_comparison && i.excluded_reason)
+    .map((i) => ({
+      name: i.name,
+      raw: i.excluded_reason as string,
+      reason: EXCLUSION_REASONS[i.excluded_reason as string] || i.excluded_reason,
+    }));
+  // Os que saíram por darem a mesma nota a todos são um caso à parte: não são
+  // lacuna de evidência, e são a razão de a pontuação viver numa escala mais
+  // alta do que antes. Sem explicar isso, o número parece ter inflado sozinho.
+  const equivalentItems = excludedItems.filter((i) => i.raw === "non_discriminative");
+  const missingItems = excludedItems.filter((i) => i.raw !== "non_discriminative");
 
   const rankData = [...ranking].sort((a, b) => a.score - b.score);
   const weightsData = Object.entries(cw).map(([k, v]) => ({
@@ -253,7 +309,7 @@ export default function Report({
         <MetricCard
           label="Pontuação final"
           value={top.score.toFixed(3)}
-          hint="Σ (peso do indicador × desempenho). 1,000 exige o melhor valor em todos os indicadores quantitativos e o nível máximo da rubrica em todos os qualitativos."
+          hint="Σ (peso da dimensão × nota na dimensão). 1,000 exige o melhor valor em todos os indicadores numéricos e o nível máximo da rubrica em todos os qualitativos."
         />
         <MetricCard
           label={
@@ -318,8 +374,8 @@ export default function Report({
             title={preliminary ? "Ranking dos provedores (preliminar)" : "Ranking dos provedores"}
             desc={
               preliminary
-                ? "Ranking obtido pelo método AHP a partir de julgamentos inconsistentes (RC acima do limite de Saaty). Revise as comparações do bloco D antes de tratá-lo como recomendação."
-                : "Ranking final obtido pelo método AHP, sintetizando o desempenho global de cada alternativa nos critérios avaliados."
+                ? "Os pesos do AHP vieram de julgamentos inconsistentes (RC acima do limite de Saaty). Revise as comparações do bloco D antes de tratar este ranking como recomendação."
+                : "Pontuação de 0 a 1: a nota de cada provedor em cada dimensão, ponderada pelo peso com que a dimensão entrou na conta — o do AHP, ajustado quando algum indicador fica sem evidência comparável. A conta de cada linha está logo abaixo. Diferenças muito pequenas contam como empate."
             }
           />
 
@@ -351,6 +407,81 @@ export default function Report({
               </div>
             ))}
           </div>
+
+          {closingRows.length > 0 && (
+            <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <p className="text-sm font-semibold text-slate-800">Confira a conta</p>
+              <p className="mt-0.5 text-[12px] leading-relaxed text-slate-500">
+                Cada linha é a pontuação do provedor: a nota dele em cada dimensão multiplicada
+                pelo peso com que aquela dimensão entrou na soma.
+              </p>
+              <ul className="mt-2 space-y-1 font-mono text-[12px] text-slate-600">
+                {closingRows.map((row) => (
+                  <li key={row.id}>
+                    <span className="font-sans font-medium text-slate-800">{row.name}</span> ={" "}
+                    {row.terms
+                      .map((t) => `${fmt4(t.performance)} × ${fmt4(t.weight)}`)
+                      .join(" + ")}{" "}
+                    = <strong className="text-slate-900">{fmt3(row.score)}</strong>
+                  </li>
+                ))}
+              </ul>
+
+              {equivalentItems.length > 0 && (
+                <p className="mt-2 border-t border-slate-200 pt-2 text-[12px] leading-relaxed text-slate-500">
+                  A soma usa apenas os indicadores em que os provedores diferem.{" "}
+                  {equivalentItems.length === 1 ? "Outro" : `Outros ${equivalentItems.length}`}{" "}
+                  ({equivalentItems.map((i) => i.name).join(", ")}) deram a mesma nota aos três:
+                  somariam a mesma parcela a todas as pontuações, então não mudam a ordem — só
+                  aproximariam os números uns dos outros. Ficam no relatório com a nota que
+                  obtiveram, fora da conta.
+                </p>
+              )}
+
+              {shiftedDimensions.length > 0 && appliedWeights && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-[12px] leading-relaxed text-amber-900">
+                  <p>
+                    <strong>O peso usado não é exatamente o que você declarou no AHP.</strong>{" "}
+                    {missingItems.length > 0 && (
+                      <>
+                        {missingItems.length === 1
+                          ? "Um indicador saiu da conta: "
+                          : `${missingItems.length} indicadores saíram da conta: `}
+                        {missingItems.map((item, i) => (
+                          <span key={item.name}>
+                            {i > 0 && "; "}
+                            {item.name} ({item.reason})
+                          </span>
+                        ))}
+                        .{" "}
+                      </>
+                    )}
+                    {equivalentItems.length > 0 && (
+                      <>
+                        {missingItems.length > 0 ? "Outro" : "Um"}
+                        {equivalentItems.length === 1 ? "" : "s"}{" "}
+                        {equivalentItems.length === 1 ? "" : `${equivalentItems.length} `}
+                        {equivalentItems.length === 1 ? "indicador saiu" : "saíram"} por dar a
+                        mesma nota a todos (citado{equivalentItems.length === 1 ? "" : "s"} acima).{" "}
+                      </>
+                    )}
+                    O peso {excludedItems.length === 1 ? "dele" : "deles"} foi redistribuído
+                    entre os indicadores que ficaram, então cada dimensão entrou na soma com um
+                    peso um pouco diferente:
+                  </p>
+                  <ul className="mt-1.5 space-y-0.5 tabular-nums">
+                    {shiftedDimensions.map((d) => (
+                      <li key={d}>
+                        {CRITERIA_ICONS[d] || ""} {CRITERIA_LABELS[d] || d}:{" "}
+                        <strong>{fmtPct1(cw[d] ?? 0)}</strong> declarado no AHP →{" "}
+                        <strong>{fmtPct1(appliedWeights[d] ?? 0)}</strong> aplicado
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
 
           {sensitivity && (
             <div
@@ -468,7 +599,7 @@ export default function Report({
           <SectionTitle
             step="b"
             title="Importância dos critérios"
-            desc="Pesos obtidos pelo autovetor da matriz de Saaty, montada com as suas comparações par-a-par (perguntas 17–19)."
+            desc="Pesos calculados pelo AHP a partir das suas comparações par a par (perguntas 17–19)."
           />
           <ChartCard>
             <ResponsiveContainer width="100%" height={250}>
@@ -565,6 +696,10 @@ export default function Report({
               <YAxis domain={[0, 1]} stroke="#898781" fontSize={11} tickLine={false} axisLine={false} />
               <Tooltip formatter={fmt3} cursor={{ fill: "rgba(15,23,42,0.04)" }} />
               <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+              {/* O rótulo não é enfeite: as barras que decidem o 1º lugar diferem
+                  na terceira casa (0,8688 contra 0,8718) e são indistinguíveis a
+                  olho. isAnimationActive={false} porque o LabelList só monta ao
+                  fim da animação, e esse callback não é confiável no recharts 3. */}
               {providerScores.map((p, idx) => (
                 <Bar
                   key={p.id}
@@ -572,56 +707,66 @@ export default function Report({
                   fill={providerColor(p.id, idx)}
                   radius={[4, 4, 0, 0]}
                   maxBarSize={30}
-                />
+                  isAnimationActive={false}
+                >
+                  <LabelList
+                    dataKey={p.name}
+                    position="top"
+                    formatter={fmt3}
+                    fontSize={10}
+                    fill="#52514e"
+                  />
+                </Bar>
               ))}
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-3 text-left font-semibold">#</th>
-                <th className="px-4 py-3 text-left font-semibold">Provedor</th>
-                <th className="px-4 py-3 text-left font-semibold">Score final</th>
-                {critCols.map((c) => (
-                  <th key={c} className="px-4 py-3 text-left font-semibold">
-                    {CRITERIA_LABELS[c]}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="tabular-nums">
-              {providerScores.map((p, idx) => (
-                <tr key={p.id} className="border-t border-slate-100 hover:bg-slate-50/60">
-                  <td className="px-4 py-3 text-slate-400">{p.rank}</td>
-                  <td className="px-4 py-3">
-                    <span className="flex items-center gap-2 font-medium text-slate-800">
-                      <span
-                        className="h-2.5 w-2.5 rounded-full"
-                        style={{ backgroundColor: providerColor(p.id, idx) }}
-                        aria-hidden
-                      />
-                      {p.name}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 font-semibold text-slate-900">{p.score.toFixed(3)}</td>
+        {/* A tabela de notas por dimensão só aparece sem a síntese: com ela, a
+            explicação abaixo mostra os mesmos números já com peso e soma. */}
+        {synthesis ? (
+          <div className="mt-4">
+            <SynthesisAudit synthesis={synthesis} tieTolerance={sensitivity?.tie_break_tolerance} />
+          </div>
+        ) : (
+          <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 text-left font-semibold">#</th>
+                  <th className="px-4 py-3 text-left font-semibold">Provedor</th>
+                  <th className="px-4 py-3 text-left font-semibold">Score final</th>
                   {critCols.map((c) => (
-                    <td key={c} className="px-4 py-3 text-slate-600">
-                      {typeof p[c] === "number" ? (p[c] as number).toFixed(3) : "—"}
-                    </td>
+                    <th key={c} className="px-4 py-3 text-left font-semibold">
+                      {CRITERIA_LABELS[c]}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Fecha a lacuna entre a tabela e o número: como a nota vira score final */}
-        {synthesis && (
-          <div className="mt-4">
-            <SynthesisAudit synthesis={synthesis} />
+              </thead>
+              <tbody className="tabular-nums">
+                {providerScores.map((p, idx) => (
+                  <tr key={p.id} className="border-t border-slate-100 hover:bg-slate-50/60">
+                    <td className="px-4 py-3 text-slate-400">{p.rank}</td>
+                    <td className="px-4 py-3">
+                      <span className="flex items-center gap-2 font-medium text-slate-800">
+                        <span
+                          className="h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: providerColor(p.id, idx) }}
+                          aria-hidden
+                        />
+                        {p.name}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-semibold text-slate-900">{p.score.toFixed(3)}</td>
+                    {critCols.map((c) => (
+                      <td key={c} className="px-4 py-3 text-slate-600">
+                        {typeof p[c] === "number" ? (p[c] as number).toFixed(3) : "—"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>

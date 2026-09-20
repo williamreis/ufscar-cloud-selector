@@ -22,7 +22,7 @@ import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -156,6 +156,28 @@ def _env_floats(name: str, default: str) -> Tuple[float, ...]:
     return tuple(values)
 
 
+def _env_int_map(name: str, default: str = "") -> Dict[str, int]:
+    """
+    Mapa `chave=inteiro`, separado por vírgula: `"sustainability=6,security=3"`.
+
+    Entrada malformada é ignorada item a item, em vez de derrubar a configuração
+    inteira: um teto de recuperação escrito errado não deve impedir a aplicação
+    de subir — o valor global continua valendo para as chaves que faltarem.
+    """
+    resultado: Dict[str, int] = {}
+    for item in _env_list(name, default):
+        chave, separador, valor = item.partition("=")
+        if not separador:
+            continue
+        try:
+            numero = int(valor.strip())
+        except ValueError:
+            continue
+        if numero > 0:
+            resultado[chave.strip()] = numero
+    return resultado
+
+
 @dataclass(frozen=True)
 class Settings:
     """Fotografia imutável da configuração em vigor."""
@@ -215,6 +237,30 @@ class Settings:
     chunk_size: int
     chunk_overlap: int
     max_chunks_per_query: int
+    #: Trechos recuperados por indicador. Vale para todas as dimensões, exceto
+    #: as que aparecerem no mapa abaixo.
+    chunks_per_indicator: int
+    #: Teto de trechos numa única chamada à LLM, depois da deduplicação. É o
+    #: limite que de fato manda: `chunks_per_indicator` só entrega o que couber
+    #: aqui. Os dois precisam subir juntos, ou o teto por indicador não tem
+    #: efeito nenhum.
+    #:
+    #: O valor depende do modelo, não do produto — uma janela de 128k comporta
+    #: dezenas de trechos, uma camada gratuita com teto de tokens por minuto
+    #: não. Por isso sai de configuração, com um padrão conservador.
+    max_chunks_per_call: int
+    #: Teto por chamada, por dimensão. Mesma lógica do mapa de indicadores.
+    max_chunks_per_call_by_dimension: Mapping[str, int]
+    #: Teto por dimensão, quando a dimensão precisa de mais (ou menos) trechos.
+    #:
+    #: As dimensões não têm o mesmo perfil documental. Sustentabilidade disputa
+    #: cinco indicadores sobre relatórios ambientais de 500+ trechos, em que o
+    #: número procurado divide o parágrafo com meia dúzia de outras grandezas;
+    #: segurança lê whitepapers curtos e específicos, em que três trechos sobram.
+    #: Um teto único obriga a escolher entre desperdiçar contexto num caso e
+    #: perder evidência no outro — foi assim que o percentual de energia
+    #: renovável do Google ficou de fora de uma avaliação inteira.
+    chunks_per_indicator_by_dimension: Mapping[str, int]
 
     # -- Guardrails de entrada (§23.2) --------------------------------------
     max_open_text_chars: int
@@ -397,6 +443,14 @@ def _build_settings() -> Settings:
         chunk_size=_env_int("CHUNK_SIZE", 1000),
         chunk_overlap=_env_int("CHUNK_OVERLAP", 200),
         max_chunks_per_query=_env_int("MAX_CHUNKS_PER_QUERY", 5),
+        max_chunks_per_call=_env_int("MAX_CHUNKS_PER_CALL", 14),
+        max_chunks_per_call_by_dimension=_env_int_map(
+            "MAX_CHUNKS_PER_CALL_BY_DIMENSION", "sustainability=30"
+        ),
+        chunks_per_indicator=_env_int("CHUNKS_PER_INDICATOR", 3),
+        chunks_per_indicator_by_dimension=_env_int_map(
+            "CHUNKS_PER_INDICATOR_BY_DIMENSION", "sustainability=6"
+        ),
         max_open_text_chars=_env_int("MAX_OPEN_TEXT_CHARS", 4000),
         max_upload_mb=_env_int("MAX_UPLOAD_MB", 20),
         max_documents_per_evaluation=_env_int("MAX_DOCUMENTS_PER_EVALUATION", 20),
