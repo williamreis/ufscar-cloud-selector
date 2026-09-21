@@ -25,6 +25,7 @@ from domain.methodology import (
     reload_methodology,
 )
 from domain.normalization import (
+    EXCLUDED_NON_DISCRIMINATIVE,
     STATUS_FOUND,
     STATUS_INVALID,
     STATUS_NOT_FOUND,
@@ -54,6 +55,7 @@ from domain.weights import (
 )
 
 __all__ = [
+    "EXCLUDED_NON_DISCRIMINATIVE",
     "RELEVANCE_ANSWERED",
     "RELEVANCE_MISSING",
     "RELEVANCE_UNKNOWN",

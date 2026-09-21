@@ -34,7 +34,7 @@ Três regras que este arquivo existe para fazer valer:
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from starlette.concurrency import run_in_threadpool
@@ -61,13 +61,69 @@ logger = logging.getLogger("uvicorn.error")
 
 PROMPT_ID = "PROMPT_EVIDENCE_EXTRACTION_V1"
 
-# Trechos recuperados por indicador. Baixo de propósito: o contexto de uma
-# chamada é a soma dos trechos de 4 a 5 indicadores, e um `top_k` generoso por
-# indicador estoura o limite de tokens sem melhorar a extração.
+# Trechos recuperados por indicador, quando a dimensão não tem teto próprio.
+# Conservador porque o contexto de uma chamada é a soma dos trechos de 4 a 5
+# indicadores: subi-lo sozinho não entrega mais evidência, só faz a disputa pelas
+# vagas de `max_chunks_for_dimension` acontecer mais cedo.
 CHUNKS_PER_INDICATOR = 3
 
-# Teto de trechos numa única chamada, depois da deduplicação.
+
+def chunks_for_dimension(dimension: str) -> int:
+    """
+    Quantos trechos recuperar por indicador desta dimensão.
+
+    O teto deixou de ser único porque as dimensões não têm o mesmo perfil
+    documental: sustentabilidade disputa cinco indicadores sobre relatórios
+    ambientais de centenas de trechos, em que o número procurado divide o
+    parágrafo com outras grandezas, enquanto segurança lê whitepapers curtos em
+    que três trechos já bastam. Com um teto só, ou se desperdiça contexto de um
+    lado ou se perde evidência do outro — e foi assim que o percentual de energia
+    renovável do Google ficou de fora de uma avaliação inteira.
+
+    A configuração falha para o valor global quando a dimensão não é citada, e
+    para `CHUNKS_PER_INDICATOR` quando não há configuração carregada (é o caso
+    dos testes de domínio, que não sobem o `Settings`).
+    """
+    try:
+        from config import get_settings
+
+        settings = get_settings()
+        return int(
+            settings.chunks_per_indicator_by_dimension.get(
+                dimension, settings.chunks_per_indicator
+            )
+        )
+    except Exception:  # noqa: BLE001 - sem configuração, vale o padrão do módulo
+        return CHUNKS_PER_INDICATOR
+
+
+# Teto de trechos numa única chamada, depois da deduplicação, quando não há
+# configuração carregada. É o limite que de fato manda: `chunks_for_dimension`
+# só entrega o que couber aqui, e subir um sem o outro não muda nada.
 MAX_CHUNKS_PER_CALL = 14
+
+
+def max_chunks_for_dimension(dimension: str) -> int:
+    """
+    Teto de trechos numa chamada desta dimensão.
+
+    O valor certo depende do modelo, não do produto. Com `gpt-4o-mini` (janela de
+    128k) trinta trechos de mil caracteres são ~7,5 mil tokens — folgado; numa
+    camada gratuita com teto de tokens por minuto, os mesmos trinta estouram a
+    cota. Por isso o padrão é conservador e a decisão sai de configuração.
+    """
+    try:
+        from config import get_settings
+
+        settings = get_settings()
+        return int(
+            settings.max_chunks_per_call_by_dimension.get(
+                dimension, settings.max_chunks_per_call
+            )
+        )
+    except Exception:  # noqa: BLE001 - sem configuração, vale o padrão do módulo
+        return MAX_CHUNKS_PER_CALL
+
 
 # Chamadas simultâneas à LLM. O produto faz (provedores × dimensões) chamadas —
 # com 3 provedores são 9 —, e dispará-las todas de uma vez bate no rate limit da
@@ -107,6 +163,11 @@ class Finding:
     summary: Optional[str] = None
     source_chunk_id: Optional[str] = None
     source_document: Optional[str] = None
+    #: Ano do documento que sustenta a evidência, quando o nome do arquivo o
+    #: declara. Não entra em cálculo: entra em comparabilidade (ver
+    #: `enforce_vintage_consistency`) e no relatório, para que o gestor veja de
+    #: que período é cada número que está comparando.
+    source_year: Optional[int] = None
     rejection: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
@@ -123,6 +184,7 @@ class Finding:
             "summary": self.summary,
             "source_chunk_id": self.source_chunk_id,
             "source_document": self.source_document,
+            "source_year": self.source_year,
             "rejection": self.rejection,
         }
 
@@ -269,8 +331,36 @@ def _retrieve_for_indicator(
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Consulta o índice para um par (provedor, indicador). Bloqueante."""
     query_text = rag.query_for_indicator(indicator, provider.get("name"), extra_terms)
-    hits = rag.search(query_text, CHUNKS_PER_INDICATOR, session_id, provider["id"])
+    hits = rag.search(
+        query_text, chunks_for_dimension(indicator.dimension), session_id, provider["id"]
+    )
     return query_text, hits
+
+
+def _intercalar(listas: Sequence[Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """
+    Alterna entre as listas: o 1º trecho de cada indicador, depois o 2º, e assim
+    por diante.
+
+    Existe por causa do corte em `MAX_CHUNKS_PER_CALL`. Concatenar os trechos
+    indicador a indicador e cortar no fim é um corte por **posição na lista**, e
+    não por relevância: os últimos indicadores da dimensão perdem os trechos
+    todos enquanto os primeiros ficam com o orçamento inteiro. Com cinco
+    indicadores a 3 trechos e teto de 14, o quinto já perdia um; ao subir o teto
+    de recuperação da sustentabilidade para 6, resíduos e circularidade
+    passaram a chegar à LLM sem nenhum trecho — e voltaram `NOT_FOUND` para os
+    três provedores, como se os relatórios não falassem de reciclagem.
+
+    Intercalando, o corte tira o trecho **menos relevante de cada** indicador em
+    vez de todos os de alguns. Cada indicador chega à chamada com pelo menos o
+    seu melhor trecho enquanto houver vaga.
+    """
+    saida: List[Dict[str, Any]] = []
+    for posicao in range(max((len(lista) for lista in listas), default=0)):
+        for lista in listas:
+            if posicao < len(lista):
+                saida.append(lista[posicao])
+    return saida
 
 
 def _dedupe_chunks(chunks: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -648,6 +738,84 @@ def enforce_unit_consistency(
     return tuple(ajustados)
 
 
+def enforce_vintage_consistency(
+    findings: Sequence[Finding],
+    log: GuardrailLog,
+    tolerance_years: Optional[int],
+) -> Tuple[Finding, ...]:
+    """
+    Invalida indicadores cujos provedores publicam em períodos distantes demais.
+
+    **Por que existe.** A §4.4.1.1 exige valores "mensuráveis e comparáveis" e o
+    produto já protege contra unidade divergente. Safra divergente é o mesmo
+    problema por outra porta, e estava desprotegida: medido no acervo em uso, a
+    taxa de desvio de aterro comparava 2024 da AWS com FY22 do Azure, e o
+    percentual de energia renovável ia de 2022 a 2025 — três anos entre o número
+    de um provedor e o de outro, num mercado que muda de ano para ano. Nada disso
+    levantava erro; o ranking saía com aparência de normalidade separando
+    provedores por 1,9 ponto entre medições de períodos diferentes.
+
+    **Por que a tolerância não é zero.** Relatórios de sustentabilidade são
+    anuais e não saem no mesmo mês. É normal que, num dado momento, um provedor
+    já tenha publicado o ano corrente e outro ainda esteja no anterior — e
+    descartar o indicador por causa disso jogaria fora comparação legítima. Um
+    ano de diferença absorve a defasagem de publicação; dois ou mais são
+    períodos genuinamente distintos.
+
+    `tolerance_years=None` desliga a regra e o indicador segue para o cálculo —
+    a safra continua registrada em `source_year` e visível no relatório.
+
+    A invalidação é do indicador inteiro, em todas as alternativas, pela mesma
+    razão da §11.1 e de `enforce_unit_consistency`: retirar só o provedor
+    desatualizado deixaria os demais numa régua da qual ele saiu por um motivo
+    que não é desempenho.
+    """
+    if tolerance_years is None:
+        return tuple(findings)
+
+    anos_por_indicador: Dict[str, List[int]] = {}
+    for finding in findings:
+        if finding.status == STATUS_FOUND and finding.source_year:
+            anos_por_indicador.setdefault(finding.indicator_id, []).append(finding.source_year)
+
+    inconsistentes = {
+        indicator_id: (min(anos), max(anos))
+        for indicator_id, anos in anos_por_indicador.items()
+        if len(anos) > 1 and (max(anos) - min(anos)) > tolerance_years
+    }
+
+    for indicator_id, (menor, maior) in inconsistentes.items():
+        log.record(
+            rule_id="EVIDENCE_VINTAGE_MISMATCH",
+            stage=STAGE_LLM_OUTPUT,
+            action=ACTION_REJECT,
+            reason=(
+                f"Evidências de períodos distantes ({menor}–{maior}, tolerância de "
+                f"{tolerance_years} ano(s)): o indicador não é comparável e sai da avaliação."
+            ),
+            target=indicator_id,
+        )
+
+    ajustados: List[Finding] = []
+    for finding in findings:
+        intervalo = inconsistentes.get(finding.indicator_id)
+        if intervalo is None or finding.status not in (STATUS_FOUND, STATUS_PARTIAL):
+            ajustados.append(finding)
+            continue
+        menor, maior = intervalo
+        ajustados.append(
+            replace(
+                finding,
+                status=STATUS_INVALID,
+                rejection=(
+                    f"Evidências de {menor} a {maior} entre os provedores — "
+                    "períodos distantes demais para comparar."
+                ),
+            )
+        )
+    return tuple(ajustados)
+
+
 # ---------------------------------------------------------------------------
 # Orquestração
 # ---------------------------------------------------------------------------
@@ -798,6 +966,13 @@ def _findings_from_raw(
         fontes_entregues[chunk_label(indice)] = real
         fontes_entregues[real] = real
 
+    # chunk_id → ano do documento, para carimbar a safra de cada evidência.
+    ano_por_chunk: Dict[str, int] = {
+        str(c["chunk_id"]): int(c["year"])
+        for c in chunks
+        if c.get("chunk_id") and c.get("year")
+    }
+
     dimension = indicators[0].dimension if indicators else ""
     por_id = {i.id: i for i in indicators}
     respondidos: Dict[str, Finding] = {}
@@ -832,7 +1007,8 @@ def _findings_from_raw(
                 target=f"{provider_id}/{indicator.id}",
             )
             finding = _missing(provider_id, indicator, "Indicador omitido pela extração.")
-        findings.append(finding)
+        ano = ano_por_chunk.get(finding.source_chunk_id or "")
+        findings.append(replace(finding, source_year=ano) if ano else finding)
 
     return findings
 
@@ -950,9 +1126,16 @@ async def extract_performances(
         (rag.query_for_indicator(indicator, provider.get("name"), extras), provider["id"])
         for provider, indicator, extras in pares
     ]
+    # Um único lote, buscado com o maior teto entre as dimensões, e depois
+    # recortado por indicador. Como os resultados voltam ordenados por
+    # similaridade, recortar os `n` primeiros é idêntico a ter buscado com `n` —
+    # e evita quebrar o lote em um por dimensão, que era o que dava os 0,44s no
+    # lugar de 17,5s de idas e voltas à API de embeddings.
+    tetos = [chunks_for_dimension(indicator.dimension) for _, indicator, _ in pares]
     resultados = await run_in_threadpool(
-        rag.search_many, consultas, CHUNKS_PER_INDICATOR, session_id
+        rag.search_many, consultas, max(tetos) if tetos else CHUNKS_PER_INDICATOR, session_id
     )
+    resultados = [hits[:teto] for hits, teto in zip(resultados, tetos)]
 
     chunks_por_par: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for (provider, indicator, extras), (query_text, _), hits in zip(
@@ -968,7 +1151,10 @@ async def extract_performances(
                 # Separa o que veio da pesquisa do que veio do Bloco E: sem
                 # isso, a consulta gravada não diz por que ficou como ficou.
                 "refined_terms": list(extras),
-                "top_k": CHUNKS_PER_INDICATOR,
+                # O teto efetivo desta consulta, que varia por dimensão. Gravar a
+                # constante deixaria o registro afirmando um valor que a busca
+                # não usou.
+                "top_k": chunks_for_dimension(indicator.dimension),
                 "chunks": hits,
             }
         )
@@ -980,12 +1166,14 @@ async def extract_performances(
     tarefas = []
     for provider in providers:
         for dimension, do_grupo in por_dimensao.items():
-            reunidos = [
-                chunk
-                for indicator in do_grupo
-                for chunk in chunks_por_par.get((provider["id"], indicator.id), [])
-            ]
-            contexto = _dedupe_chunks(reunidos)[:MAX_CHUNKS_PER_CALL]
+            contexto = _dedupe_chunks(
+                _intercalar(
+                    [
+                        chunks_por_par.get((provider["id"], indicator.id), [])
+                        for indicator in do_grupo
+                    ]
+                )
+            )[: max_chunks_for_dimension(dimension)]
             tarefas.append(
                 _extract_dimension(
                     provider, dimension, do_grupo, contexto, methodology, log, semaphore
@@ -1001,7 +1189,12 @@ async def extract_performances(
             resultado.llm_runs.append(run.as_dict())
 
     # -- 3. Comparabilidade entre alternativas -------------------------------
+    #    Duas regras da mesma família: valores só entram na mesma régua se forem
+    #    da mesma grandeza (unidade) e do mesmo período (safra).
     findings = list(enforce_unit_consistency(findings, methodology, log))
+    findings = list(
+        enforce_vintage_consistency(findings, log, methodology.vintage_tolerance_years)
+    )
 
     resultado.findings = tuple(findings)
 
@@ -1040,13 +1233,16 @@ async def extract_performances(
 
 __all__ = [
     "CHUNKS_PER_INDICATOR",
+    "chunks_for_dimension",
     "DEFAULT_CONCURRENCY",
     "MAX_CHUNKS_PER_CALL",
+    "max_chunks_for_dimension",
     "PROMPT_ID",
     "ExtractionResult",
     "Finding",
     "canonical_unit",
     "describe_indicators",
     "enforce_unit_consistency",
+    "enforce_vintage_consistency",
     "extract_performances",
 ]

@@ -368,6 +368,22 @@ def global_inventory() -> Dict[str, Any]:
         index_models
         and (settings.embedding_provider, settings.embedding_model) not in index_models
     )
+
+    # Vetores no índice contra trechos declarados pelos documentos registrados.
+    # O índice FAISS não é idempotente: reingerir tudo acrescenta uma segunda
+    # cópia de cada trecho em vez de substituir a primeira. É outra falha
+    # silenciosa — nada quebra, o número de documentos continua certo, e o que
+    # se perde é recuperação: as cópias disputam as mesmas vagas do `top_k`, de
+    # modo que uma busca por três trechos devolve dois distintos e a evidência
+    # que estava em terceiro nunca chega à LLM. Já aconteceu: um índice com o
+    # dobro do tamanho gastava um terço do orçamento de recuperação consigo
+    # mesmo, e o efeito só apareceu quando um indicador sumiu do ranking.
+    chunks_total = rag.count_chunks()
+    chunks_registered = sum(
+        int(record.get("chunk_count") or 0) for record in registered.values()
+    )
+    chunks_duplicated = max(0, chunks_total - chunks_registered) if chunks_registered else 0
+
     return {
         "pdf_dir": str(pdf_dir()),
         "allowed_extensions": list(allowed_extensions()),
@@ -388,7 +404,12 @@ def global_inventory() -> Dict[str, Any]:
         # evidência de ninguém (ver `doc_keywords` em providers_data).
         "unassigned_files": [f["name"] for f in files if not f["provider_id"]],
         "documents_indexed": len(registered),
-        "chunks_total": rag.count_chunks(),
+        "chunks_total": chunks_total,
+        # Quantos trechos os documentos registrados declaram ter gerado. Igual a
+        # `chunks_total` num índice saudável.
+        "chunks_registered": chunks_registered,
+        "chunks_duplicated": chunks_duplicated,
+        "index_duplicated": chunks_duplicated > 0,
         # Provedor sem nenhum trecho indexado fica fora do ranking (§ cobertura
         # documental em /api/recommend), então a lista traz todos, inclusive os zerados.
         "providers": [

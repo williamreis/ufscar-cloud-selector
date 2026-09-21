@@ -174,3 +174,63 @@ def test_envio_antigo_continua_produzindo_os_mesmos_pesos():
     assert j["ratio"] == pytest.approx(0.2)
     assert j["preference"] == "security"
     assert j["intensity"] == "strong"
+
+
+# --- Separação entre os blocos (§4.5.1 e Figura 33) -------------------------
+
+
+def _aberta(question_id, texto):
+    return {
+        "question_id": question_id,
+        "question_text": f"Enunciado de {question_id}",
+        "choice": None,
+        "text": texto,
+        "pairwise": None,
+    }
+
+
+def _fechada(question_id, escolha):
+    return {
+        "question_id": question_id,
+        "question_text": f"Enunciado de {question_id}",
+        "choice": escolha,
+        "text": None,
+        "pairwise": None,
+    }
+
+
+def test_bloco_d_e_identificavel_para_ser_excluido_da_recuperacao():
+    """
+    O Bloco D vira peso pelo AHP e não deve direcionar a busca documental.
+
+    Enquanto as comparações viajavam no texto entregue ao refinamento, dois
+    envios que diferiam **apenas** na prioridade declarada recuperavam trechos
+    diferentes — e o peso do gestor acabava escolhendo quais documentos seriam
+    lidos, por um caminho que a §4.5.1 diz não existir.
+    """
+    q = response(
+        _fechada("sust_q1", "Decisivo (critério indispensável)"),
+        comparison("comp_sust_perf", "sustainability", "performance", "sustainability", "strong"),
+        _aberta("req_sust", "Precisamos de compromisso público de neutralidade."),
+    )
+    rotulos = q.pairwise_question_labels()
+    enunciado_do_par = "Entre sustainability e performance, qual dimensão deve ter maior prioridade?"
+
+    assert rotulos == {enunciado_do_par}
+
+    sobrando = [p for p in q.qa_for_llm() if p["pergunta"] not in rotulos]
+    perguntas = {p["pergunta"] for p in sobrando}
+    assert enunciado_do_par not in perguntas
+    assert {"Enunciado de sust_q1", "Enunciado de req_sust"} <= perguntas
+
+
+def test_justificativa_continua_recebendo_o_bloco_d():
+    """
+    A exclusão vale só para a recuperação: explicar o resultado ao gestor exige
+    conhecer a prioridade que ele declarou.
+    """
+    q = response(
+        comparison("comp_sust_sec", "sustainability", "security", "security", "extreme"),
+    )
+    perguntas = {p["pergunta"] for p in q.qa_for_llm()}
+    assert "Entre sustainability e security, qual dimensão deve ter maior prioridade?" in perguntas

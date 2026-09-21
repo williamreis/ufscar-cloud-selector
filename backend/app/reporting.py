@@ -70,6 +70,25 @@ def build_synthesis(
     normalizados = comparability.normalized_by()
     nomes = {i.id: i.name for i in methodology.indicators}
 
+    # Peso efetivo somado por dimensão (§11.2). É ESTE o peso que fecha a
+    # Equação 5 quando ela é lida por dimensão — não o peso do AHP.
+    #
+    # Os dois só coincidem quando nenhum indicador é excluído. Basta um sair
+    # para a renormalização redistribuir o peso dele entre os sobreviventes, e
+    # a dimensão que perdeu o indicador encolher enquanto as outras crescem.
+    # Medido numa avaliação real: o gestor declarou Desempenho em 74,6% e o
+    # cálculo rodou com 69,7%, porque a latência saiu por falta de evidência.
+    # Sem este campo o relatório não tinha como dizer isso, e a conta exibida
+    # não fechava à mão — que é o que a §5.5 exige que ela faça.
+    dimensao_por_indicador = {i.id: i.dimension for i in methodology.indicators}
+    pesos_efetivos_por_dimensao: Dict[str, float] = {d: 0.0 for d in criteria_keys}
+    for indicator_id, peso in scoring.effective_weights.items():
+        dimensao = dimensao_por_indicador.get(indicator_id)
+        if dimensao is not None:
+            pesos_efetivos_por_dimensao[dimensao] = (
+                pesos_efetivos_por_dimensao.get(dimensao, 0.0) + float(peso)
+            )
+
     indicadores_meta: List[Dict[str, Any]] = []
     for indicator_id in comparability.valid:
         indicator = methodology.by_id(indicator_id)
@@ -91,6 +110,7 @@ def build_synthesis(
         por_dimensao = {
             d: {
                 "weight": round(float(criteria_weights.get(d, 0.0)), 6),
+                "effective_weight": round(float(pesos_efetivos_por_dimensao.get(d, 0.0)), 6),
                 "contribution": round(float(score.dimension_contributions.get(d, 0.0)), 6),
             }
             for d in criteria_keys
@@ -134,6 +154,10 @@ def build_synthesis(
                     "rejection": finding.rejection,
                     "source_chunk_id": finding.source_chunk_id,
                     "source_document": finding.source_document,
+                    # Período do documento que sustenta o número. Sem ele, duas
+                    # medições de anos diferentes aparecem lado a lado sem que o
+                    # gestor tenha como perceber.
+                    "source_year": finding.source_year,
                     "in_comparison": indicator.id in comparability.valid,
                     "excluded_reason": comparability.excluded.get(indicator.id),
                     "normalized_value": (
@@ -168,6 +192,12 @@ def build_synthesis(
         "equation": "S_i = Σ_{j∈V} w'_j × r_ij",
         "criteria_order": list(criteria_keys),
         "dimension_weights": {k: round(float(v), 6) for k, v in criteria_weights.items()},
+        # O peso com que cada dimensão efetivamente entrou na soma. Divergir de
+        # `dimension_weights` é o caso normal quando há exclusão — e é a
+        # diferença que o relatório precisa mostrar para ser conferível.
+        "dimension_effective_weights": {
+            k: round(float(v), 6) for k, v in pesos_efetivos_por_dimensao.items()
+        },
         "effective_weights": {
             k: round(float(v), 6) for k, v in scoring.effective_weights.items()
         },

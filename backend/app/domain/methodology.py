@@ -207,6 +207,12 @@ class Methodology:
     tie_break_policy: str
     tie_break_tolerance: float
     partial_counts_as_comparable: bool
+    #: Diferença máxima, em anos, entre a evidência mais antiga e a mais recente
+    #: de um indicador. `None` desliga a regra. Ver `_todo_vintage` no scales.json.
+    vintage_tolerance_years: Optional[int]
+    #: Retira da Equação 5 o indicador cujo valor normalizado é o mesmo para
+    #: todas as alternativas. Ver `comparability` no scales.json.
+    exclude_non_discriminative: bool
     indicators_version: str
     not_operationalized: Tuple[ExcludedIndicator, ...] = ()
     exclusion_reasons: Mapping[str, str] = field(default_factory=dict)
@@ -548,6 +554,7 @@ def load_methodology(
 
     tie_break = scales_raw.get("tie_break") or {}
     evidence = scales_raw.get("evidence") or {}
+    comparability = scales_raw.get("comparability") or {}
 
     excluidos, motivos = _build_exclusions(
         indicators_raw.get("not_operationalized") or {}, indicators
@@ -568,6 +575,14 @@ def load_methodology(
         tie_break_policy=str(tie_break.get("policy", "show_tie")),
         tie_break_tolerance=float(tie_break.get("tolerance", 1e-9)),
         partial_counts_as_comparable=bool(evidence.get("partial_counts_as_comparable", False)),
+        vintage_tolerance_years=(
+            None
+            if evidence.get("vintage_tolerance_years") is None
+            else int(evidence["vintage_tolerance_years"])
+        ),
+        exclude_non_discriminative=bool(
+            comparability.get("exclude_non_discriminative", False)
+        ),
         indicators_version=str(indicators_raw.get("version", "1")),
         not_operationalized=excluidos,
         exclusion_reasons=motivos,

@@ -434,16 +434,33 @@ class ExtractionCache(Base):
 
     **O problema que resolve.** Duas avaliações com o mesmo questionário sobre o
     mesmo índice liam o mesmo documento de formas diferentes. Medido em cinco
-    execuções: 4 das 39 células (provedor × indicador) oscilaram entre `FOUND`,
-    `PARTIAL` e `NOT_FOUND`, e como a §11.1 exige evidência válida para todos os
-    provedores na mesma execução, cada oscilação derrubava o indicador inteiro —
-    quatro dos treze entravam de forma intermitente.
+    execuções **com o prompt v5, antes das regras 5.1 a 5.4**: 4 das 39 células
+    (provedor × indicador) oscilaram entre `FOUND`, `PARTIAL` e `NOT_FOUND`, e
+    como a §11.1 exige evidência válida para todos os provedores na mesma
+    execução, cada oscilação derrubava o indicador inteiro — quatro dos treze
+    entravam de forma intermitente.
 
-    A causa não é amostragem: o registro mostra as chamadas todas no mesmo modelo,
-    com temperatura 0 e sem fallback. É o não-determinismo residual de um modelo
-    servido por API, que a temperatura reduz e não elimina. Num relatório que se
-    apresenta como auditável, dois envios idênticos precisam dar o mesmo
-    resultado; guardar a leitura é o que garante isso.
+    **Remedição em 06/09/2026** (prompt v6, `gpt-oss-120b` via Groq, acervo de
+    4407 trechos), com `scripts/checar_determinismo.py` e **o cache desligado**,
+    de modo que as três execuções fossem três leituras independentes: **0 das 39
+    células oscilaram**, e as pontuações saíram idênticas até a sexta casa — as
+    mesmas da execução com cache ligado. Nesta configuração a extração é
+    determinística por si, e o cache economiza chamada em vez de estabilizar
+    resultado.
+
+    Isso **não** torna o cache dispensável. O determinismo observado vale para um
+    modelo e um prompt; trocar qualquer um dos dois refaz a pergunta, e a chave
+    existe justamente para que a troca não passe despercebida. Num relatório que
+    se apresenta como auditável, dois envios idênticos precisam dar o mesmo
+    resultado — e o cache é o que garante isso independentemente do provedor.
+
+    **O que a remedição revelou de fato.** Como a extração é uma chamada por
+    (provedor × dimensão), com todos os indicadores da dimensão no mesmo prompt,
+    alterar a especificação de **um** indicador muda a leitura dos vizinhos: ao
+    converter `sustainability_ewaste_management` de qualitativo para
+    quantitativo, o Google perdeu `renewable_energy` e `carbon_emissions`, que
+    vinham `FOUND`. Não é ruído — é sensibilidade determinística ao contexto, e
+    ela confunde qualquer comparação A/B de um indicador isolado.
 
     **O que é guardado.** A resposta **bruta**, antes da validação. A validação
     (§19), a rubrica (§10.1) e a normalização (§9) são código determinístico e

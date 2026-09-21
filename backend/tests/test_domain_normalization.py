@@ -11,6 +11,8 @@ Três afirmações que o produto faz e que estes testes existem para sustentar:
      indicador como não comparável em vez de produzir um número.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from domain.methodology import load_methodology
@@ -319,6 +321,115 @@ def test_renormalizacao_preserva_a_proporcao_entre_os_validos():
 
 def test_sem_indicador_valido_nao_ha_peso_efetivo():
     assert renormalize_weights({"a": 0.5}, []) == {}
+
+
+# --- Indicador que não discrimina (§9.3 generalizada) -----------------------
+
+
+def _sem_a_regra(metodologia):
+    """A mesma metodologia com `exclude_non_discriminative` desligado."""
+    return replace(metodologia, exclude_non_discriminative=False)
+
+
+def test_indicador_igual_para_todos_sai_da_soma(metodologia):
+    """
+    Indicador que dá o mesmo valor a todas as alternativas ocupa peso e não
+    separa ninguém. Sai da Equação 5 — e o motivo é `non_discriminative`, não
+    falta de evidência: a evidência existe e é idêntica.
+    """
+    performances = [
+        *desempenho("performance_availability", {"aws": 99.99, "gcp": 99.9, "azure": 99.5}),
+        *desempenho("performance_latency", {"aws": 30.0, "gcp": 30.0, "azure": 30.0}),
+    ]
+    ids = ["performance_availability", "performance_latency"]
+    conjunto = build_comparability_set(performances, IDS, ids, metodologia)
+
+    assert conjunto.valid == ("performance_availability",)
+    assert conjunto.excluded["performance_latency"] == EXCLUDED_NON_DISCRIMINATIVE
+
+
+def test_indicador_que_nao_discrimina_mantem_a_nota_no_relatorio(metodologia):
+    """
+    Sai da soma, não do relatório: "os três estão empatados em 30 ms" é
+    informação para quem decide, e some se a nota virar `None`.
+    """
+    performances = [
+        *desempenho("performance_availability", {"aws": 99.99, "gcp": 99.9, "azure": 99.5}),
+        *desempenho("performance_latency", {"aws": 30.0, "gcp": 30.0, "azure": 30.0}),
+    ]
+    ids = ["performance_availability", "performance_latency"]
+    conjunto = build_comparability_set(performances, IDS, ids, metodologia)
+
+    linhas = {
+        (n.provider_id, n.indicator_id): n
+        for n in conjunto.normalized
+        if n.indicator_id == "performance_latency"
+    }
+    for pid in IDS:
+        assert linhas[(pid, "performance_latency")].original_value == 30.0
+        assert linhas[(pid, "performance_latency")].normalized_value == pytest.approx(1.0)
+
+
+def test_tirar_o_que_nao_discrimina_nao_muda_a_ordem(metodologia):
+    """
+    A propriedade que autoriza a regra.
+
+    Um indicador constante soma `w'_k × c` a TODAS as pontuações, então a
+    pontuação sem ele é uma transformação afim crescente da pontuação com ele.
+    A ordem é idêntica; o que muda é a margem, que deixa de ser comprimida.
+    """
+    performances = [
+        *desempenho("performance_availability", {"aws": 99.99, "gcp": 99.9, "azure": 99.5}),
+        *desempenho("performance_latency", {"aws": 30.0, "gcp": 30.0, "azure": 30.0}),
+    ]
+    ids = ["performance_availability", "performance_latency"]
+    pesos = {"performance_availability": 0.3, "performance_latency": 0.7}
+
+    def ranking(metodo):
+        conjunto = build_comparability_set(performances, IDS, ids, metodo)
+        efetivos = renormalize_weights(pesos, conjunto.valid)
+        resultado = compute_scores(PROVEDORES, conjunto, efetivos, metodo)
+        ordenados = sorted(resultado.scores, key=lambda s: -s.score)
+        return [s.provider_id for s in ordenados], (
+            ordenados[0].score - ordenados[-1].score
+        )
+
+    ordem_com, amplitude_com = ranking(_sem_a_regra(metodologia))
+    ordem_sem, amplitude_sem = ranking(metodologia)
+
+    assert ordem_com == ordem_sem
+    # O indicador constante levava 70% do peso: tirá-lo devolve a distância real.
+    assert amplitude_sem > amplitude_com
+
+
+def test_se_nenhum_indicador_discrimina_o_conjunto_fica_como_esta(metodologia):
+    """
+    Salvaguarda. Sem ela o conjunto esvaziaria e todos pontuariam 0 — que o
+    relatório leria como "nenhum provedor atende", quando o fato é o oposto.
+    """
+    performances = [
+        *desempenho("performance_availability", {"aws": 99.9, "gcp": 99.9, "azure": 99.9}),
+        *desempenho("performance_latency", {"aws": 30.0, "gcp": 30.0, "azure": 30.0}),
+    ]
+    ids = ["performance_availability", "performance_latency"]
+    conjunto = build_comparability_set(performances, IDS, ids, metodologia)
+
+    assert set(conjunto.valid) == set(ids)
+    assert conjunto.excluded == {}
+
+
+def test_regra_nao_se_aplica_a_uma_unica_alternativa(metodologia):
+    """
+    Com um provedor só, todo indicador é trivialmente "igual para todos" e a
+    regra esvaziaria a avaliação. Não há comparação a fazer ali, e não é esta
+    regra que deve dizê-lo.
+    """
+    performances = desempenho("performance_availability", {"aws": 99.9})
+    conjunto = build_comparability_set(
+        performances, ["aws"], ["performance_availability"], metodologia
+    )
+    assert conjunto.valid == ("performance_availability",)
+    assert conjunto.excluded == {}
 
 
 # --- Pontuação e contribuições (§12, §13) ----------------------------------
